@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langgraph
+pandas
+openai
+pinecone-client
+pdfplumber
+python-dotenv
+streamlit
+requests

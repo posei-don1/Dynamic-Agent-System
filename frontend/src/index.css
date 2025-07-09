@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-dark-primary text-dark-text font-sans;
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    overflow: hidden;
+  }
+  
+  * {
+    @apply box-border;
+  }
+  
+  input, textarea, select {
+    @apply bg-dark-secondary border-dark-border;
+  }
+  
+  input:focus, textarea:focus, select:focus {
+    @apply outline-none ring-2 ring-dark-info ring-opacity-50;
+  }
+}
+
+@layer components {
+  .neo-panel {
+    @apply bg-dark-secondary shadow-neo-outset rounded-2xl border border-dark-border;
+  }
+  
+  .neo-panel-inset {
+    @apply bg-dark-primary shadow-neo-inset rounded-xl border border-dark-border;
+  }
+  
+  .neo-button {
+    @apply bg-dark-secondary shadow-neo-outset rounded-lg border border-dark-border 
+           hover:shadow-neo-hover active:shadow-neo-pressed 
+           transition-all duration-200 cursor-pointer;
+  }
+  
+  .neo-button-small {
+    @apply bg-dark-secondary shadow-neo-small rounded-lg border border-dark-border 
+           hover:shadow-neo-hover active:shadow-neo-pressed 
+           transition-all duration-200 cursor-pointer;
+  }
+  
+  .neo-input {
+    @apply bg-dark-primary shadow-neo-inset rounded-lg border border-dark-border 
+           px-4 py-2 text-dark-text placeholder-dark-textSecondary
+           focus:shadow-neo-pressed focus:ring-2 focus:ring-dark-info focus:ring-opacity-50;
+  }
+  
+  .neo-card {
+    @apply bg-dark-secondary shadow-neo-outset rounded-xl border border-dark-border p-4;
+  }
+  
+  .neo-card-flat {
+    @apply bg-dark-secondary rounded-xl border border-dark-border p-4;
+  }
+  
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #4a4a4a #2a2a2a;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #2a2a2a;
+    border-radius: 3px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #4a4a4a;
+    border-radius: 3px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: #5a5a5a;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(45deg, #3b82f6, #10b981);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  .glass-effect {
+    backdrop-filter: blur(10px);
+    background: rgba(42, 42, 42, 0.8);
+  }
+  
+  .glow-effect {
+    filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.3));
+  }
+} 
