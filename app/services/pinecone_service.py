@@ -8,6 +8,7 @@ import json
 import hashlib
 import os
 from datetime import datetime
+from pinecone import Pinecone, ServerlessSpec  # Add this import at the top
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,8 @@ class PineconeService:
         self.config = config or {}
         self.api_key = self.config.get('api_key') or os.getenv('PINECONE_API_KEY')
         self.environment = self.config.get('environment') or os.getenv('PINECONE_ENVIRONMENT', 'us-east1-gcp')
-        self.index_name = self.config.get('index_name', 'dynamic-agent-index')
-        self.dimension = self.config.get('dimension', 1536)  # Default for OpenAI embeddings
+        self.index_name = self.config.get('index_name', 'dynamic-ai-agent')
+        self.dimension = self.config.get('dimension', 1024)  # Default for OpenAI embeddings
         
         # Initialize Pinecone client
         self.pinecone_client = None
@@ -55,7 +56,7 @@ class PineconeService:
             return {"error": "Pinecone not available"}
 
         index_name = index_name or self.index_name or "default-index"
-        dimension = dimension or self.dimension or 1536
+        dimension = dimension or self.dimension or 1024
 
         try:
             # Check if index already exists
@@ -162,6 +163,36 @@ class PineconeService:
             
         except Exception as e:
             logger.error(f"Error upserting vectors: {str(e)}")
+            return {"error": f"Vector upsert failed: {str(e)}"}
+    
+    def upsert_vector(self, vector_id: str, embedding: list, metadata: dict = None, namespace: str = None) -> dict:
+        """
+        Upsert a single vector (embedding) into Pinecone index.
+        Args:
+            vector_id: Unique ID for the vector
+            embedding: Embedding vector (list of floats)
+            metadata: Optional metadata dict
+            namespace: Optional namespace
+        Returns:
+            Upsert result dict
+        """
+        if not self.index:
+            return {"error": "Not connected to any index"}
+        try:
+            vector = {
+                "id": vector_id,
+                "values": embedding,
+            }
+            if metadata:
+                vector["metadata"] = metadata
+            if namespace:
+                response = self.index.upsert(vectors=[vector], namespace=namespace)
+            else:
+                response = self.index.upsert(vectors=[vector])
+            logger.info(f"Upserted vector {vector_id}")
+            return {"success": True, "upserted_count": response.upserted_count, "vector_id": vector_id}
+        except Exception as e:
+            logger.error(f"Error upserting vector {vector_id}: {str(e)}")
             return {"error": f"Vector upsert failed: {str(e)}"}
     
     def query_vectors(self, query_vector: List[float], top_k: int = 10, 

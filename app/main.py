@@ -16,6 +16,7 @@ load_dotenv()
 from .graph.graph_builder import DynamicAgentGraph
 from app.services.pdf_utils import PDFProcessor
 from app.services.embedding_service import EmbeddingService
+from app.services.pinecone_service import PineconeService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -318,7 +319,27 @@ async def upload_file(file: UploadFile = File(...)):
             embeddings = embedding_service.embed_texts(chunks)
             print(f"Generated {len(embeddings)} embeddings")
             print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
-            
+
+            # Store each embedding in Pinecone
+            print("=== STORING EMBEDDINGS IN PINECONE ===")
+            try:
+                pinecone_service = PineconeService()
+                pinecone_connect_result = pinecone_service.connect_to_index()
+                if pinecone_connect_result and pinecone_connect_result.get("error"):
+                    print(f"Pinecone connection error: {pinecone_connect_result['error']}")
+                else:
+                    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                        vector_id = f"{safe_filename}_chunk_{i}"
+                        metadata = {"text": chunk, "filename": safe_filename, "chunk_index": i}
+                        upsert_result = pinecone_service.upsert_vector(vector_id, embedding, metadata=metadata)
+                        if upsert_result.get("success"):
+                            print(f"✅ Upserted chunk {i+1}/{len(chunks)}: {vector_id}")
+                        else:
+                            print(f"❌ Failed to upsert chunk {i+1}: {upsert_result.get('error')}")
+            except Exception as pinecone_error:
+                print(f"Pinecone storage error: {str(pinecone_error)}")
+                print("Continuing without Pinecone storage.")
+
         except Exception as embed_error:
             print(f"Embedding generation error: {str(embed_error)}")
             return {"status": "error", "message": f"Embedding generation failed: {str(embed_error)}"}
