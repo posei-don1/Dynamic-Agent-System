@@ -93,122 +93,66 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
-    """Process a query through the dynamic agent system"""
+    """Process a query using RAG: embed, retrieve, and generate answer from docs."""
     start_time = time.time()
-    
     try:
-        logger.info(f"Processing query: {request.query[:50]}... with persona: {request.persona}")
-        
-        # Use actual graph system if available
-        if graph_system is not None:
-            # Prepare context for the graph system
-            context = request.context or {}
-            
-            # Add persona to context
-            context["preferred_persona"] = request.persona
-            
-            # Add file paths for sample data
-            context["data_file"] = "./data/msft_2024.csv"
-            context["contract_file"] = "./data/sample_contract.pdf"
-            
-            # Process query through the actual graph system
-            result = await graph_system.process_query(request.query, context)
-            
-            # Extract response and format appropriately
-            formatted_response = result.get("formatted_response", {})
-            metadata = result.get("metadata", {})
-            
-            # Ensure the response has the expected structure
-            if "response" not in formatted_response:
-                formatted_response["response"] = result.get("processed_data", {}).get("summary", "No response generated")
-            
-            if "suggestions" not in formatted_response:
-                formatted_response["suggestions"] = result.get("suggestions", {}).get("recommendations", [])
-            
-            processing_time = time.time() - start_time
-            
-            response = QueryResponse(
-                formatted_response=formatted_response,
-                metadata={
-                    "persona_selected": metadata.get("persona_selected", request.persona),
-                    "route_selected": metadata.get("route_selected", "unknown"),
-                    "route_confidence": metadata.get("route_confidence", 0.0),
-                    "processing_time": processing_time,
-                    "timestamp": time.time(),
-                    "system_mode": "actual_graph"
-                },
-                status="success"
-            )
-            
-            logger.info(f"Query processed via graph system in {processing_time:.2f}s")
-            return response
-            
+        logger.info(f"Processing query: {request.query[:50]}...")
+        # 1. Embed the user query
+        embedding_service = EmbeddingService()
+        query_embedding = embedding_service.embed_texts([request.query])[0]
+
+        # 2. Query Pinecone for relevant chunks
+        pinecone_service = PineconeService()
+        pinecone_service.connect_to_index()
+        results = pinecone_service.query_vectors(
+            query_vector=query_embedding,
+            top_k=5
+        )
+        if not results.get("success"):
+            raise Exception(results.get("error", "Unknown Pinecone error"))
+        top_chunks = [match["metadata"]["text"] for match in results["results"]]
+        context = "\n\n".join(top_chunks)
+
+        # 3. Use OpenAI LLM to synthesize an answer
+        import openai
+        llm_prompt = (
+            f"Context:\n{context}\n\n"
+            f"Question: {request.query}\n"
+            "Answer:"
+        )
+        # Use chat.completions.create for OpenAI Python SDK v1.x
+        if not hasattr(openai, "chat") or not hasattr(openai.chat, "completions"):
+            raise RuntimeError("Your openai Python package is too old. Please upgrade to openai>=1.0.0.")
+        llm_response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",  # or "gpt-4" if you have access
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that answers questions based on the provided context."},
+                {"role": "user", "content": llm_prompt}
+            ],
+            max_tokens=512,
+            temperature=0.2
+        )
+        answer = None
+        content = getattr(llm_response.choices[0].message, "content", None)
+        if content is not None:
+            answer = content.strip()
         else:
-            # Fall back to mock responses if graph system is not available
-            logger.warning("Graph system not available, using mock responses")
-            
-            # Simulate processing time
-            await asyncio.sleep(0.5)
-            
-            # Mock response based on persona
-            persona_responses = {
-                "financial_analyst": {
-                    "response": f"[MOCK] Financial analysis of your query: '{request.query}'. Based on the current market data, I recommend...",
-                    "suggestions": [
-                        "Review quarterly earnings reports",
-                        "Analyze competitor performance",
-                        "Consider market volatility factors"
-                    ]
-                },
-                "legal_advisor": {
-                    "response": f"[MOCK] Legal analysis of your query: '{request.query}'. From a legal perspective, the key considerations are...",
-                    "suggestions": [
-                        "Review relevant regulations",
-                        "Consult with specialized counsel",
-                        "Document compliance requirements"
-                    ]
-                },
-                "data_scientist": {
-                    "response": f"[MOCK] Data analysis of your query: '{request.query}'. The statistical analysis reveals...",
-                    "suggestions": [
-                        "Gather additional data points",
-                        "Validate data quality",
-                        "Consider machine learning models"
-                    ]
-                },
-                "business_consultant": {
-                    "response": f"[MOCK] Business analysis of your query: '{request.query}'. Strategic recommendations include...",
-                    "suggestions": [
-                        "Conduct market research",
-                        "Analyze business metrics",
-                        "Develop implementation plan"
-                    ]
-                }
-            }
-            
-            formatted_response = persona_responses.get(request.persona, {
-                "response": f"[MOCK] General response to: '{request.query}'",
-                "suggestions": ["Consider consulting with a specialist"]
-            })
-            
-            processing_time = time.time() - start_time
-            
-            response = QueryResponse(
-                formatted_response=formatted_response,
-                metadata={
-                    "persona_selected": request.persona,
-                    "route_selected": "mock_processor",
-                    "route_confidence": 0.95,
-                    "processing_time": processing_time,
-                    "timestamp": time.time(),
-                    "system_mode": "mock_fallback"
-                },
-                status="success"
-            )
-            
-            logger.info(f"Query processed via mock system in {processing_time:.2f}s")
-            return response
-        
+            answer = "[ERROR] No answer returned from LLM."
+        processing_time = time.time() - start_time
+        response = QueryResponse(
+            formatted_response={
+                "response": answer,
+                "chunks_used": top_chunks
+            },
+            metadata={
+                "processing_time": processing_time,
+                "timestamp": time.time(),
+                "system_mode": "rag_document_qa"
+            },
+            status="success"
+        )
+        logger.info(f"Query processed via RAG in {processing_time:.2f}s")
+        return response
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
