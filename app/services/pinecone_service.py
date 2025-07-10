@@ -27,115 +27,93 @@ class PineconeService:
         self._initialize_pinecone()
     
     def _initialize_pinecone(self):
-        """Initialize Pinecone client and index"""
+        """Initialize Pinecone client and index using the new Pinecone API"""
         try:
-            # Try to import Pinecone
-            try:
-                import pinecone
-                self.pinecone_available = True
-            except ImportError:
+            if Pinecone is None or ServerlessSpec is None:
                 logger.warning("Pinecone library not available")
                 self.pinecone_available = False
                 return
-            
+
             if not self.api_key:
                 logger.warning("Pinecone API key not provided")
+                self.pinecone_available = False
                 return
-            
-            # Initialize Pinecone
-            pinecone.init(
-                api_key=self.api_key,
-                environment=self.environment
-            )
-            
-            self.pinecone_client = pinecone
-            logger.info("Pinecone client initialized successfully")
-            
+
+            # Create Pinecone client instance
+            self.pinecone_client = Pinecone(api_key=self.api_key)
+            self.pinecone_available = True
+            logger.info("Pinecone client initialized successfully (new API)")
         except Exception as e:
             logger.error(f"Error initializing Pinecone: {str(e)}")
             self.pinecone_available = False
-    
-    def create_index(self, index_name: str = None, dimension: int = None) -> Dict[str, Any]:
+
+    def create_index(self, index_name: str = None, dimension: int = None, cloud: str = 'aws', region: str = 'us-west-2') -> Dict[str, Any]:
         """
-        Create a new Pinecone index
-        
-        Args:
-            index_name: Name of the index to create
-            dimension: Dimension of the vectors
-            
-        Returns:
-            Creation result
+        Create a new Pinecone index using the new API
         """
-        if not self.pinecone_available:
+        if not self.pinecone_available or self.pinecone_client is None:
             return {"error": "Pinecone not available"}
-        
-        index_name = index_name or self.index_name
-        dimension = dimension or self.dimension
-        
+
+        index_name = index_name or self.index_name or "default-index"
+        dimension = dimension or self.dimension or 1536
+
         try:
             # Check if index already exists
-            if index_name in self.pinecone_client.list_indexes():
+            if hasattr(self.pinecone_client, 'list_indexes') and index_name in self.pinecone_client.list_indexes().names():
                 return {
                     "success": True,
                     "message": f"Index '{index_name}' already exists",
                     "index_name": index_name
                 }
-            
-            # Create the index
+
+            if ServerlessSpec is None:
+                return {"error": "ServerlessSpec not available in pinecone package"}
+
             self.pinecone_client.create_index(
                 name=index_name,
                 dimension=dimension,
-                metric="cosine"
+                metric="cosine",
+                spec=ServerlessSpec(cloud=cloud, region=region)
             )
-            
+
             logger.info(f"Created Pinecone index: {index_name}")
-            
+
             return {
                 "success": True,
                 "message": f"Index '{index_name}' created successfully",
                 "index_name": index_name,
                 "dimension": dimension
             }
-            
+
         except Exception as e:
             logger.error(f"Error creating index: {str(e)}")
             return {"error": f"Index creation failed: {str(e)}"}
-    
-    def connect_to_index(self, index_name: str = None) -> Dict[str, Any]:
+
+    def connect_to_index(self, index_name: str = None):
         """
-        Connect to an existing Pinecone index
-        
-        Args:
-            index_name: Name of the index to connect to
-            
-        Returns:
-            Connection result
+        Connect to an existing Pinecone index using the new API
         """
-        if not self.pinecone_available:
+        if not self.pinecone_available or self.pinecone_client is None:
             return {"error": "Pinecone not available"}
-        
-        index_name = index_name or self.index_name
-        
+
+        index_name = index_name or self.index_name or "default-index"
+
         try:
-            # Check if index exists
-            if index_name not in self.pinecone_client.list_indexes():
+            if hasattr(self.pinecone_client, 'list_indexes') and index_name not in self.pinecone_client.list_indexes().names():
                 return {"error": f"Index '{index_name}' does not exist"}
-            
-            # Connect to the index
-            self.index = self.pinecone_client.Index(index_name)
-            
-            # Get index stats
-            stats = self.index.describe_index_stats()
-            
-            logger.info(f"Connected to Pinecone index: {index_name}")
-            
-            return {
-                "success": True,
-                "message": f"Connected to index '{index_name}'",
-                "index_name": index_name,
-                "stats": stats
-            }
-            
+
+            if hasattr(self.pinecone_client, 'Index'):
+                self.index = self.pinecone_client.Index(index_name)
+                stats = self.index.describe_index_stats()
+                logger.info(f"Connected to Pinecone index: {index_name}")
+                return {
+                    "success": True,
+                    "message": f"Connected to index '{index_name}'",
+                    "index_name": index_name,
+                    "stats": stats
+                }
+            else:
+                return {"error": "Pinecone client does not have Index method"}
         except Exception as e:
             logger.error(f"Error connecting to index: {str(e)}")
             return {"error": f"Index connection failed: {str(e)}"}
@@ -412,7 +390,7 @@ class PineconeService:
     
     def list_indexes(self) -> Dict[str, Any]:
         """List all available indexes"""
-        if not self.pinecone_available:
+        if not self.pinecone_available or self.pinecone_client is None:
             return {"error": "Pinecone not available"}
         
         try:
@@ -428,10 +406,10 @@ class PineconeService:
     
     def delete_index(self, index_name: str = None) -> Dict[str, Any]:
         """Delete an index"""
-        if not self.pinecone_available:
+        if not self.pinecone_available or self.pinecone_client is None:
             return {"error": "Pinecone not available"}
         
-        index_name = index_name or self.index_name
+        index_name = index_name or self.index_name or "default-index"
         
         try:
             self.pinecone_client.delete_index(index_name)

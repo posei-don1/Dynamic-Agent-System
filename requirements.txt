@@ -8,3 +8,8 @@ pdfplumber
 python-dotenv
 streamlit
 requests
+PyPDF2
+PyMuPDF
+pytesseract
+pdf2image
+Pillow
