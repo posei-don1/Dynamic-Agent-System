@@ -175,7 +175,9 @@ with col2:
         # Upload file to backend (stub for now)
         if st.button("📤 Upload to Backend"):
             try:
-                files = {"file": uploaded_file.getvalue()}
+                files = {
+                    "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)
+                }
                 response = requests.post(f"{backend_url}/upload", files=files)
                 if response.status_code == 200:
                     st.success("File uploaded successfully!")

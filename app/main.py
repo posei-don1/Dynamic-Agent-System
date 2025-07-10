@@ -17,6 +17,7 @@ from .graph.graph_builder import DynamicAgentGraph
 from app.services.pdf_utils import PDFProcessor
 from app.services.embedding_service import EmbeddingService
 from app.services.pinecone_service import PineconeService
+from app.services.file_utils import load_structured_file, answer_structured_query, toolbox_dispatch
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -93,10 +94,116 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
-    """Process a query using RAG: embed, retrieve, and generate answer from docs."""
+    """Process a query using LLM-based routing: structured toolbox or RAG."""
+    import openai
     start_time = time.time()
     try:
         logger.info(f"Processing query: {request.query[:50]}...")
+        # 1. Use LLM to classify the query
+        classification_prompt = (
+            "Classify this question as 'structured' if it is about tables, columns, numbers, or data analysis, "
+            "or 'unstructured' if it is about general document content.\n"
+            f"Question: {request.query}\n"
+            "Answer with only 'structured' or 'unstructured'."
+        )
+        classification_response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a classifier that only answers with 'structured' or 'unstructured'."},
+                {"role": "user", "content": classification_prompt}
+            ],
+            max_tokens=1,
+            temperature=0
+        )
+        classification_content = classification_response.choices[0].message.content
+        if classification_content is not None:
+            classification = classification_content.strip().lower()
+        else:
+            classification = "unstructured"
+        logger.info(f"LLM classified query as: {classification}")
+        if classification == "structured":
+            # 2. Use LLM to select function and args
+            toolbox_description = (
+                "Available functions (all operate on a pandas DataFrame 'df' from the user's uploaded file):\n"
+                "- mean(column): mean of a column\n"
+                "- sum(column): sum of a column\n"
+                "- min(column): min of a column\n"
+                "- max(column): max of a column\n"
+                "- count(): number of rows\n"
+                "- unique(column): unique values in a column\n"
+                "- median(column): median of a column\n"
+                "- std(column): standard deviation of a column\n"
+                "- describe(column): describe stats of a column\n"
+                "- value_counts(column): value counts of a column\n"
+                "- filter_rows(column, value): rows where column == value\n"
+                "- groupby_agg(group_col, agg_col, agg_func): group by group_col, aggregate agg_col with agg_func (e.g., 'mean', 'sum')\n"
+                "- sort(column, ascending=True): sort by column\n"
+                "- correlation(col1, col2): correlation between two columns\n"
+                "Return a JSON: {\"function\": <function_name>, \"args\": {<arg1>: <val1>, ...}}."
+            )
+            function_selection_prompt = (
+                f"User query: {request.query}\n"
+                f"Columns: (assume columns are present in the user's uploaded file)\n"
+                f"{toolbox_description}"
+            )
+            function_response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a function selector. Only return a JSON object specifying the function and arguments to call."},
+                    {"role": "user", "content": function_selection_prompt}
+                ],
+                max_tokens=100,
+                temperature=0
+            )
+            import json
+            import ast
+            func_json = None
+            func_content = function_response.choices[0].message.content
+            if func_content is not None:
+                try:
+                    func_json = json.loads(func_content)
+                except Exception:
+                    try:
+                        func_json = ast.literal_eval(func_content)
+                    except Exception:
+                        func_json = None
+            if not func_json or "function" not in func_json or "args" not in func_json:
+                return {"status": "error", "message": "Could not parse function selection from LLM."}
+            function_name = func_json["function"]
+            args = func_json["args"]
+            # Always use the single structured file in /data/
+            structured_dir = './data/'
+            structured_path = None
+            for ext in ['.csv', '.xls', '.xlsx']:
+                candidate = os.path.join(structured_dir, f'structured{ext}')
+                if os.path.exists(candidate):
+                    structured_path = candidate
+                    break
+            if not structured_path:
+                return {"status": "error", "message": "No structured file found in /data/."}
+            df = load_structured_file(structured_path)
+            try:
+                result = toolbox_dispatch(df, function_name, args)
+            except Exception as e:
+                return {"status": "error", "message": f"Error executing function: {str(e)}"}
+            processing_time = time.time() - start_time
+            response = QueryResponse(
+                formatted_response={
+                    "response": str(result),
+                    "function": function_name,
+                    "args": args,
+                    "source_file": os.path.basename(structured_path)
+                },
+                metadata={
+                    "processing_time": processing_time,
+                    "timestamp": time.time(),
+                    "system_mode": "structured_toolbox"
+                },
+                status="success"
+            )
+            logger.info(f"Query answered via toolbox in {processing_time:.2f}s")
+            return response
+        # 3. Fallback to RAG
         # 1. Embed the user query
         embedding_service = EmbeddingService()
         query_embedding = embedding_service.embed_texts([request.query])[0]
@@ -114,7 +221,6 @@ async def process_query(request: QueryRequest):
         context = "\n\n".join(top_chunks)
 
         # 3. Use OpenAI LLM to synthesize an answer
-        import openai
         llm_prompt = (
             f"Context:\n{context}\n\n"
             f"Question: {request.query}\n"
@@ -157,6 +263,104 @@ async def process_query(request: QueryRequest):
         logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
+async def save_uploaded_file(file: UploadFile) -> tuple[str, bytes, str]:
+    """Save uploaded file and return (safe_filename, file_bytes, file_path)."""
+    upload_dir = "./data/uploads/"
+    os.makedirs(upload_dir, exist_ok=True)
+    safe_filename = file.filename if file.filename else f"uploaded_{int(time.time())}.dat"
+    file_path = os.path.join(upload_dir, safe_filename)
+    file_bytes = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(file_bytes)
+    print(f"File saved to: {file_path}")
+    return safe_filename, file_bytes, file_path
+
+def detect_file_type(safe_filename: str, file_bytes: bytes, content_type: str) -> str:
+    ext = os.path.splitext(safe_filename)[1].lower()
+    # Robust structured file detection
+    is_structured = (
+        ext in [".csv", ".xls", ".xlsx"] or
+        "csv" in content_type or
+        (ext == "" and b"," in file_bytes[:1024] and b"\n" in file_bytes[:1024])
+    )
+    is_pdf_by_header = file_bytes[:4] == b'%PDF'
+    is_pdf = (
+        ext == ".pdf" or 
+        content_type == "application/pdf" or 
+        "pdf" in content_type or 
+        is_pdf_by_header
+    )
+    is_text = (
+        ext in [".txt", ".text"] or 
+        content_type.startswith("text/") or
+        "text" in content_type
+    )
+    print(f"File extension: '{ext}' (type: {type(ext)})")
+    print(f"Content type: '{content_type}'")
+    print(f"PDF header detected: {is_pdf_by_header}")
+    print(f"Detected as PDF: {is_pdf}")
+    print(f"Detected as Text: {is_text}")
+    print(f"Detected as Structured: {is_structured}")
+    if is_structured:
+        return "structured"
+    elif is_pdf:
+        return "pdf"
+    elif is_text:
+        return "text"
+    else:
+        return "unsupported"
+
+def save_structured_file(file_bytes: bytes, ext: str) -> str:
+    structured_dir = './data/'
+    os.makedirs(structured_dir, exist_ok=True)
+    for prev_ext in ['.csv', '.xls', '.xlsx']:
+        prev_path = os.path.join(structured_dir, f'structured{prev_ext}')
+        if os.path.exists(prev_path):
+            os.remove(prev_path)
+    structured_path = os.path.join(structured_dir, f'structured{ext}')
+    with open(structured_path, 'wb') as f:
+        f.write(file_bytes)
+    print(f"Structured file saved to: {structured_path}")
+    return structured_path
+
+def extract_text_from_file(file_path: str, file_type: str) -> str:
+    if file_type == "structured":
+        return load_structured_file(file_path).to_string(index=False)
+    elif file_type == "pdf":
+        pdf_processor = PDFProcessor()
+        extraction_result = pdf_processor.extract_text_from_pdf(file_path)
+        if not extraction_result.get("success"):
+            raise Exception(extraction_result.get("error", "Text extraction failed"))
+        return extraction_result["text"]
+    elif file_type == "text":
+        with open(file_path, "rb") as f:
+            return f.read().decode("utf-8", errors="ignore")
+    else:
+        raise Exception("Unsupported file type for text extraction")
+
+def chunk_text(text: str) -> list[str]:
+    pdf_processor = PDFProcessor()
+    return [chunk["text"] for chunk in pdf_processor.chunk_text(text)]
+
+def generate_embeddings(chunks: list[str]) -> list[list[float]]:
+    embedding_service = EmbeddingService()
+    return embedding_service.embed_texts(chunks)
+
+def upsert_chunks_to_pinecone(chunks, embeddings, safe_filename):
+    pinecone_service = PineconeService()
+    pinecone_connect_result = pinecone_service.connect_to_index()
+    if pinecone_connect_result and pinecone_connect_result.get("error"):
+        print(f"Pinecone connection error: {pinecone_connect_result['error']}")
+        return
+    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        vector_id = f"{safe_filename}_chunk_{i}"
+        metadata = {"text": chunk, "filename": safe_filename, "chunk_index": i}
+        upsert_result = pinecone_service.upsert_vector(vector_id, embedding, metadata=metadata)
+        if upsert_result.get("success"):
+            print(f"✅ Upserted chunk {i+1}/{len(chunks)}: {vector_id}")
+        else:
+            print(f"❌ Failed to upsert chunk {i+1}: {upsert_result.get('error')}")
+
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
@@ -164,141 +368,47 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"Filename: {file.filename}")
         print(f"Content Type: {file.content_type}")
         print(f"File size: {file.size if hasattr(file, 'size') else 'Unknown'}")
-
-        # Save uploaded file to disk
-        upload_dir = "./data/uploads/"
-        os.makedirs(upload_dir, exist_ok=True)
-        safe_filename = file.filename if file.filename else f"uploaded_{int(time.time())}.dat"
-        file_path = os.path.join(upload_dir, safe_filename)
-        file_bytes = await file.read()
-        
-        print(f"File bytes length: {len(file_bytes)}")
-        
-        with open(file_path, "wb") as f:
-            f.write(file_bytes)
-        print(f"File saved to: {file_path}")
-
-        # Enhanced file type detection
+        safe_filename, file_bytes, file_path = await save_uploaded_file(file)
         ext = os.path.splitext(safe_filename)[1].lower()
         content_type = (file.content_type or "").lower()
-        
-        # Check first few bytes for PDF signature
-        is_pdf_by_header = file_bytes[:4] == b'%PDF'
-        
-        print(f"File extension: '{ext}'")
-        print(f"Content type: '{content_type}'")
-        print(f"PDF header detected: {is_pdf_by_header}")
-        
-        # Determine if this is a PDF
-        is_pdf = (
-            ext == ".pdf" or 
-            content_type == "application/pdf" or 
-            "pdf" in content_type or 
-            is_pdf_by_header
-        )
-        
-        # Determine if this is a text file
-        is_text = (
-            ext in [".txt", ".text"] or 
-            content_type.startswith("text/") or
-            "text" in content_type
-        )
-        
-        print(f"Detected as PDF: {is_pdf}")
-        print(f"Detected as Text: {is_text}")
-
-        if is_pdf:
-            print("=== PROCESSING AS PDF ===")
-            try:
-                pdf_processor = PDFProcessor()
-                print("PDFProcessor initialized")
-                
-                extraction_result = pdf_processor.extract_text_from_pdf(file_path)
-                # print(f"Extraction result: {extraction_result}")
-                
-                if not extraction_result.get("success"):
-                    error_msg = extraction_result.get("error", "Text extraction failed")
-                    print(f"PDF extraction failed: {error_msg}")
-                    return {"status": "error", "message": f"PDF extraction failed: {error_msg}"}
-                
-                text = extraction_result["text"]
-                print(f"Extracted text length: {len(text)}")
-                
-                chunks = [chunk["text"] for chunk in pdf_processor.chunk_text(text)]
-                print(f"Number of chunks created: {len(chunks)}")
-                
-            except Exception as pdf_error:
-                print(f"PDF processing error: {str(pdf_error)}")
-                return {"status": "error", "message": f"PDF processing error: {str(pdf_error)}"}
-                
-        elif is_text:
-            print("=== PROCESSING AS TEXT ===")
-            try:
-                text = file_bytes.decode("utf-8", errors="ignore")
-                print(f"Decoded text length: {len(text)}")
-                
-                pdf_processor = PDFProcessor()
-                chunks = [chunk["text"] for chunk in pdf_processor.chunk_text(text)]
-                print(f"Number of chunks created: {len(chunks)}")
-                
-            except Exception as text_error:
-                print(f"Text processing error: {str(text_error)}")
-                return {"status": "error", "message": f"Text processing error: {str(text_error)}"}
-        else:
+        file_type = detect_file_type(safe_filename, file_bytes, content_type)
+        if file_type == "unsupported":
             print("=== UNSUPPORTED FILE TYPE ===")
-            print(f"File extension: {ext}")
-            print(f"Content type: {content_type}")
-            print(f"PDF header: {is_pdf_by_header}")
             return {
                 "status": "error", 
-                "message": f"Unsupported file type. Extension: '{ext}', Content-Type: '{content_type}'. Only PDF and TXT files are supported."
+                "message": f"Unsupported file type. Extension: '{ext}', Content-Type: '{content_type}'. Only PDF, TXT, CSV, XLS, XLSX files are supported."
             }
-
-        # Generate embeddings
-        print("=== GENERATING EMBEDDINGS ===")
-        try:
-            embedding_service = EmbeddingService()
-            print("EmbeddingService initialized")
-            
-            embeddings = embedding_service.embed_texts(chunks)
-            print(f"Generated {len(embeddings)} embeddings")
-            print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
-
-            # Store each embedding in Pinecone
-            print("=== STORING EMBEDDINGS IN PINECONE ===")
-            try:
-                pinecone_service = PineconeService()
-                pinecone_connect_result = pinecone_service.connect_to_index()
-                if pinecone_connect_result and pinecone_connect_result.get("error"):
-                    print(f"Pinecone connection error: {pinecone_connect_result['error']}")
-                else:
-                    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                        vector_id = f"{safe_filename}_chunk_{i}"
-                        metadata = {"text": chunk, "filename": safe_filename, "chunk_index": i}
-                        upsert_result = pinecone_service.upsert_vector(vector_id, embedding, metadata=metadata)
-                        if upsert_result.get("success"):
-                            print(f"✅ Upserted chunk {i+1}/{len(chunks)}: {vector_id}")
-                        else:
-                            print(f"❌ Failed to upsert chunk {i+1}: {upsert_result.get('error')}")
-            except Exception as pinecone_error:
-                print(f"Pinecone storage error: {str(pinecone_error)}")
-                print("Continuing without Pinecone storage.")
-
-        except Exception as embed_error:
-            print(f"Embedding generation error: {str(embed_error)}")
-            return {"status": "error", "message": f"Embedding generation failed: {str(embed_error)}"}
-
+        if file_type == "structured":
+            file_path = save_structured_file(file_bytes, ext)
+            text = extract_text_from_file(file_path, file_type)
+            print(f"Extracted text length: {len(text)}")
+            print("Skipping embedding for structured file.")
+            return {
+                "status": "success",
+                "filename": safe_filename,
+                "file_type": file_type.upper(),
+                "text_length": len(text),
+                "message": "Structured file uploaded successfully (no embeddings created)"
+            }
+        # For unstructured files, continue with RAG
+        text = extract_text_from_file(file_path, file_type)
+        print(f"Extracted text length: {len(text)}")
+        chunks = chunk_text(text)
+        print(f"Number of chunks created: {len(chunks)}")
+        embeddings = generate_embeddings(chunks)
+        print(f"Generated {len(embeddings)} embeddings")
+        print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
+        upsert_chunks_to_pinecone(chunks, embeddings, safe_filename)
         print("=== SUCCESS ===")
         return {
             "status": "success",
             "filename": safe_filename,
-            "file_type": "PDF" if is_pdf else "TEXT",
+            "file_type": file_type.upper(),
             "text_length": len(text),
             "num_chunks": len(chunks),
             "embedding_dim": len(embeddings[0]) if embeddings else 0,
             "message": "File uploaded and embeddings created successfully"
         }
-        
     except Exception as e:
         print(f"=== UPLOAD ERROR ===")
         print(f"Error: {str(e)}")
