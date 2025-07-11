@@ -91,38 +91,17 @@ This will check:
 
 ### Starting the Application
 
-You can run the system in two ways:
-
-#### Option 1: Using the Streamlit UI (Recommended for Testing)
-
-1. Start the FastAPI backend:
+Start the FastAPI backend:
 ```bash
 python run_backend.py
 ```
 The backend will start on `http://localhost:8000`
-
-2. In a new terminal, start the Streamlit UI:
-```bash
-python run_streamlit.py
-```
-The UI will start on `http://localhost:8501`
 
 #### Option 2: Direct API Usage
 
 ```bash
 python app/main.py
 ```
-
-### Streamlit UI Features
-
-The Streamlit UI provides:
-
-- **Query Interface**: Text input for natural language queries
-- **Persona Selection**: Choose from financial analyst, legal advisor, data scientist, or business consultant
-- **File Upload**: Upload PDF or CSV files for analysis
-- **Response Display**: Formatted responses with suggestions and metadata
-- **Connection Testing**: Test backend connectivity
-- **Query History**: Track previous queries and responses
 
 ### API Endpoints
 
@@ -133,13 +112,6 @@ The Streamlit UI provides:
 
 ### Example Usage
 
-#### Using the Streamlit UI
-1. Open `http://localhost:8501` in your browser
-2. Enter a query like "Analyze the Microsoft financial data for revenue trends"
-3. Select the appropriate persona (e.g., "Financial Analyst")
-4. Click "Ask Agent" to get the response
-
-#### Using the API directly
 ```python
 import requests
 
@@ -306,7 +278,7 @@ For questions or issues, please open an issue on the GitHub repository or contac
 
 ## How to Run the Dynamic Agent System
 
-Here are the step-by-step instructions to run your Dynamic Agent System with the Streamlit UI:
+Here are the step-by-step instructions to run your Dynamic Agent System:
 
 ### Prerequisites
 
@@ -322,10 +294,7 @@ pip install -r requirements.txt
 
 ### Running the System
 
-You need to run **both** the backend and the frontend. Open **two separate terminals/command prompts**:
-
-#### Terminal 1: Start the FastAPI Backend
-
+Start the FastAPI backend:
 ```bash
 python run_backend.py
 ```
@@ -340,64 +309,11 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 - You should see FastAPI startup messages
 - API documentation will be available at `http://localhost:8000/docs`
 
-#### Terminal 2: Start the Streamlit UI
-
-```bash
-<code_block_to_apply_changes_from>
-```
-
-**OR** alternatively:
-```bash
-streamlit run streamlit_app.py --server.port=8501
-```
-
-✅ **Expected Output**:
-- Streamlit will start on `http://localhost:8501`
-- Your default browser should automatically open the UI
-- If not, manually navigate to `http://localhost:8501`
-
 ### Testing the System
 
-1. **Open your browser** to `http://localhost:8501`
-
-2. **Test the connection**:
-   - In the sidebar, click "🔗 Test Connection"
-   - Should show "✅ Backend is connected!"
-
-3. **Try a sample query**:
-   - Enter: "Analyze the Microsoft financial data for revenue trends"
-   - Select persona: "💼 Financial Analyst"
-   - Click "🚀 Ask Agent"
-
-4. **Upload a file (optional)**:
-   - Use the file uploader to test PDF/CSV uploads
-   - Click "📤 Upload to Backend"
-
-### Troubleshooting
-
-**If the backend doesn't start**:
-- Check if port 8000 is already in use
-- Make sure all dependencies are installed
-- Check for any import errors in the console
-
-**If the Streamlit UI doesn't start**:
-- Check if port 8501 is already in use
-- Make sure streamlit is installed: `pip install streamlit`
-- Try running directly: `streamlit run streamlit_app.py`
-
-**If connection test fails**:
-- Ensure the backend is running on port 8000
-- Check the "Backend URL" in the sidebar (should be `http://localhost:8000`)
-- Verify no firewall is blocking the connection
-
-### Alternative: Direct API Testing
-
-If you prefer to test the API directly without the UI:
+You can test the backend API using curl, Postman, or your frontend integration:
 
 ```bash
-# Start only the backend
-python run_backend.py
-
 # Test with curl
 curl -X POST "http://localhost:8000/query" \
   -H "Content-Type: application/json" \
@@ -409,7 +325,7 @@ curl -X POST "http://localhost:8000/query" \
 
 ### Stopping the System
 
-- Press `Ctrl+C` in both terminals to stop the backend and UI
-- Or close the terminal windows
+- Press `Ctrl+C` in the terminal to stop the backend
+- Or close the terminal window
 
 That's it! The system should now be running with a beautiful Streamlit interface for testing your Dynamic Agent System. 

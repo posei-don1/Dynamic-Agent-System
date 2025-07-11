@@ -14,16 +14,16 @@ class Router:
     def __init__(self):
         self.route_patterns = {
             "doc_node": {
-                "keywords": ["document", "pdf", "contract", "agreement", "review", "analyze document"],
-                "patterns": [r".*analyze.*document.*", r".*review.*pdf.*", r".*contract.*terms.*"]
+                "keywords": ["document", "pdf", "contract", "agreement", "review", "analyze document", "clause", "terms"],
+                "patterns": [r".*analyze.*document.*", r".*review.*pdf.*", r".*contract.*terms.*", r".*clause.*"]
             },
             "db_node": {
-                "keywords": ["database", "table", "sql", "query", "data", "csv", "records"],
-                "patterns": [r".*query.*data.*", r".*from.*table.*", r".*csv.*analysis.*"]
+                "keywords": ["database", "table", "sql", "query", "data", "csv", "records", "show", "display"],
+                "patterns": [r".*query.*data.*", r".*from.*table.*", r".*csv.*analysis.*", r".*show.*data.*"]
             },
             "math_node": {
-                "keywords": ["calculate", "math", "formula", "compute", "equation", "statistics"],
-                "patterns": [r".*calculate.*", r".*what.*is.*\d+.*", r".*formula.*for.*"]
+                "keywords": ["calculate", "math", "formula", "compute", "equation", "statistics", "moving average", "ma", "stock", "price", "msft", "aapl", "financial", "average", "trend", "analysis"],
+                "patterns": [r".*calculate.*", r".*what.*is.*\d+.*", r".*formula.*for.*", r".*moving.*average.*", r".*\b(ma|MA)\b.*", r".*stock.*price.*", r".*from.*\d{4}.*to.*\d{4}.*", r".*march.*may.*", r".*\b(msft|MSFT|aapl|AAPL|googl|GOOGL)\b.*"]
             },
             "suggestion_node": {
                 "keywords": ["suggest", "recommend", "advice", "what should", "how to"],

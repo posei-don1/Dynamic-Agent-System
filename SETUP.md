@@ -21,9 +21,6 @@ PINECONE_INDEX_NAME=your_pinecone_index_name_here
 FASTAPI_HOST=0.0.0.0
 FASTAPI_PORT=8000
 
-# Streamlit Configuration
-STREAMLIT_PORT=8501
-
 # File Paths
 DATA_PATH=./data/
 UPLOAD_PATH=./uploads/
@@ -86,10 +83,9 @@ Send a test query and check the metadata:
 }
 ```
 
-### 3. Verify in Streamlit UI
-- Mock responses will have `[MOCK]` prefix
-- Real responses will not have this prefix
-- Check the metadata tab for system mode
+### 3. Verify API Endpoints
+- Use curl, Postman, or your frontend to test the backend endpoints.
+- Visit `http://localhost:8000/docs` for interactive API documentation.
 
 ## Troubleshooting
 
@@ -127,7 +123,7 @@ python run_backend.py
 
 1. Set up your `.env` file with real API keys
 2. Restart the backend server
-3. Test queries in the Streamlit UI
+3. Test queries using the backend API
 4. Check that responses no longer have `[MOCK]` prefix
 5. Verify `system_mode: "actual_graph"` in metadata
 

@@ -6,7 +6,6 @@ openai
 pinecone-client
 pdfplumber
 python-dotenv
-streamlit
 requests
 PyPDF2
 PyMuPDF
