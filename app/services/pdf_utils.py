@@ -15,7 +15,10 @@ class PDFProcessor:
     """Handles PDF processing including OCR and text extraction"""
     
     def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {}
+        if config is None:
+            self.config = {}
+        else:
+            self.config = config
         self.chunk_size = self.config.get('chunk_size', 1000)
         self.chunk_overlap = self.config.get('chunk_overlap', 200)
         self.ocr_enabled = self.config.get('ocr_enabled', True)
@@ -62,46 +65,49 @@ class PDFProcessor:
     def extract_text_from_pdf(self, pdf_path: str, use_ocr: bool = None) -> Dict[str, Any]:
         """
         Extract text from PDF file
-        
-        Args:
-            pdf_path: Path to PDF file
-            use_ocr: Whether to use OCR for text extraction
-            
-        Returns:
-            Extracted text and metadata
+        Returns: Extracted text and metadata, including per-page offsets
         """
         print(f"PDFProcessor: Starting extraction for {pdf_path}")
-        
         try:
             if not os.path.exists(pdf_path):
                 print(f"PDFProcessor: File not found: {pdf_path}")
                 return {"error": f"PDF file not found: {pdf_path}"}
-            
             print(f"PDFProcessor: File exists, size: {os.path.getsize(pdf_path)} bytes")
-            
-            # Determine if OCR should be used
             if use_ocr is None:
                 use_ocr = self.ocr_enabled
-            
             print(f"PDFProcessor: Available libraries - PyMuPDF: {self.pymupdf_available}, PyPDF2: {self.pypdf2_available}, OCR: {self.ocr_available}")
-            
             # Try text-based extraction first
             print("PDFProcessor: Attempting text-based extraction...")
             text_result = self._extract_text_based(pdf_path)
             print(f"PDFProcessor: Text-based result: {text_result}")
-            
             if text_result.get('success') and text_result.get('text', '').strip():
-                print("PDFProcessor: Text-based extraction successful")
+                # Add page_offsets: list of (start_char, end_char, page_number)
+                page_offsets = []
+                offset = 0
+                for page in text_result.get('pages_info', []):
+                    start = offset
+                    end = offset + page['char_count']
+                    page_offsets.append({'start': start, 'end': end, 'page_number': page['page_number']})
+                    offset = end + 1  # +1 for the newline
+                text_result['page_offsets'] = page_offsets
                 return text_result
-            
             # Fall back to OCR if text extraction failed or returned empty
             if use_ocr and self.ocr_available:
-                print("PDFProcessor: Falling back to OCR extraction")
-                return self._extract_text_ocr(pdf_path)
-            
+                print("PDFProcessor: Falling back to OCR extract")
+                ocr_result = self._extract_text_ocr(pdf_path)
+                if ocr_result.get('success'):
+                    # Add page_offsets for OCR
+                    page_offsets = []
+                    offset = 0
+                    for page in ocr_result.get('pages_info', []):
+                        start = offset
+                        end = offset + page['char_count']
+                        page_offsets.append({'start': start, 'end': end, 'page_number': page['page_number']})
+                        offset = end + 1
+                    ocr_result['page_offsets'] = page_offsets
+                return ocr_result
             print("PDFProcessor: No extraction method succeeded")
             return {"error": "Could not extract text from PDF"}
-            
         except Exception as e:
             print(f"PDFProcessor: Exception in extract_text_from_pdf: {str(e)}")
             return {"error": f"PDF processing failed: {str(e)}"}
@@ -241,46 +247,40 @@ class PDFProcessor:
         except:
             return 0.0
     
-    def chunk_text(self, text: str, chunk_size: int = None, overlap: int = None) -> List[Dict[str, Any]]:
+    def chunk_text(self, text: str, page_offsets: list = None, chunk_size: int = None, overlap: int = None) -> List[Dict[str, Any]]:
         """
-        Split text into overlapping chunks
-        
-        Args:
-            text: Text to chunk
-            chunk_size: Size of each chunk
-            overlap: Overlap between chunks
-            
-        Returns:
-            List of text chunks with metadata
+        Split text into overlapping chunks, assign page numbers if page_offsets provided
         """
         chunk_size = chunk_size or self.chunk_size
         overlap = overlap or self.chunk_overlap
-        
         if not text.strip():
             return []
-        
-        # Split text into sentences for better chunking
         sentences = self._split_into_sentences(text)
-        
         chunks = []
         current_chunk = ""
         current_size = 0
         chunk_id = 0
-        
         for sentence in sentences:
             sentence_size = len(sentence)
-            
-            # If adding this sentence would exceed chunk size, start new chunk
             if current_size + sentence_size > chunk_size and current_chunk:
+                chunk_text = current_chunk.strip()
+                start_pos = len(''.join([c['text'] for c in chunks]))
+                end_pos = start_pos + len(chunk_text)
+                # Determine page(s) for this chunk
+                pages = []
+                if page_offsets:
+                    for page in page_offsets:
+                        if not (end_pos < page['start'] or start_pos > page['end']):
+                            pages.append(page['page_number'])
                 chunks.append({
                     'id': chunk_id,
-                    'text': current_chunk.strip(),
+                    'text': chunk_text,
                     'size': current_size,
-                    'start_pos': len(''.join([c['text'] for c in chunks])),
-                    'hash': self._get_text_hash(current_chunk.strip())
+                    'start_pos': start_pos,
+                    'end_pos': end_pos,
+                    'hash': self._get_text_hash(chunk_text),
+                    'page_numbers': pages if pages else None
                 })
-                
-                # Start new chunk with overlap
                 if overlap > 0:
                     overlap_text = current_chunk[-overlap:]
                     current_chunk = overlap_text + " " + sentence
@@ -288,22 +288,28 @@ class PDFProcessor:
                 else:
                     current_chunk = sentence
                     current_size = sentence_size
-                
                 chunk_id += 1
             else:
                 current_chunk += " " + sentence if current_chunk else sentence
                 current_size += sentence_size + (1 if current_chunk else 0)
-        
-        # Add the last chunk
         if current_chunk.strip():
+            chunk_text = current_chunk.strip()
+            start_pos = len(''.join([c['text'] for c in chunks]))
+            end_pos = start_pos + len(chunk_text)
+            pages = []
+            if page_offsets:
+                for page in page_offsets:
+                    if not (end_pos < page['start'] or start_pos > page['end']):
+                        pages.append(page['page_number'])
             chunks.append({
                 'id': chunk_id,
-                'text': current_chunk.strip(),
+                'text': chunk_text,
                 'size': current_size,
-                'start_pos': len(''.join([c['text'] for c in chunks])),
-                'hash': self._get_text_hash(current_chunk.strip())
+                'start_pos': start_pos,
+                'end_pos': end_pos,
+                'hash': self._get_text_hash(chunk_text),
+                'page_numbers': pages if pages else None
             })
-        
         return chunks
     
     def _split_into_sentences(self, text: str) -> List[str]:
@@ -325,34 +331,19 @@ class PDFProcessor:
     
     def process_pdf_for_analysis(self, pdf_path: str, query: str = None) -> Dict[str, Any]:
         """
-        Process PDF for analysis with chunking and metadata
-        
-        Args:
-            pdf_path: Path to PDF file
-            query: Optional query for relevant chunk extraction
-            
-        Returns:
-            Processed PDF data
+        Process PDF for analysis with chunking and metadata, including page numbers
         """
         logger.info(f"Processing PDF for analysis: {pdf_path}")
-        
         try:
-            # Extract text
             extraction_result = self.extract_text_from_pdf(pdf_path)
-            
             if not extraction_result.get('success'):
                 return extraction_result
-            
             text = extraction_result['text']
-            
-            # Chunk the text
-            chunks = self.chunk_text(text)
-            
-            # Find relevant chunks if query provided
+            page_offsets = extraction_result.get('page_offsets', None)
+            chunks = self.chunk_text(text, page_offsets=page_offsets)
             relevant_chunks = []
             if query:
                 relevant_chunks = self._find_relevant_chunks(chunks, query)
-            
             return {
                 'success': True,
                 'file_path': pdf_path,
@@ -370,7 +361,6 @@ class PDFProcessor:
                     'chunk_overlap': self.chunk_overlap
                 }
             }
-            
         except Exception as e:
             logger.error(f"Error processing PDF for analysis: {str(e)}")
             return {"error": f"PDF analysis processing failed: {str(e)}"}
