@@ -68,13 +68,11 @@ class AnswerFormatter:
         """Format data analysis results"""
         if 'error' in data:
             return self._format_error(data)
-        
         formatted = {
             'type': 'data_summary',
             'title': 'Data Analysis Results',
             'sections': []
         }
-        
         # Dataset overview
         if 'shape' in data:
             overview = {
@@ -87,19 +85,40 @@ class AnswerFormatter:
                 }
             }
             formatted['sections'].append(overview)
-        
         # Query results
         if 'result' in data:
             result = data['result']
-            if isinstance(result, dict):
+            # Handle 'values' type (list of values for a column)
+            if isinstance(result, dict) and result.get('type') == 'values':
+                values_section = {
+                    'title': f"Values for column '{data.get('used_column', result.get('column', ''))}",
+                    'content': result.get('description', 'List of values'),
+                    'values': result.get('result', []),
+                    'column': data.get('used_column', result.get('column', '')),
+                    'type': 'values',
+                    'source_file': data.get('used_file', '')
+                }
+                formatted['sections'].append(values_section)
+            # Fallback for generic column data
+            elif isinstance(result, dict) and result.get('type') == 'column_data':
+                col_section = {
+                    'title': f"Data for column '{data.get('used_column', result.get('column', ''))}",
+                    'content': result.get('description', 'Column data'),
+                    'values': result.get('result', []),
+                    'column': data.get('used_column', result.get('column', '')),
+                    'type': 'column_data',
+                    'source_file': data.get('used_file', '')
+                }
+                formatted['sections'].append(col_section)
+            # Handle math/stat results
+            elif isinstance(result, dict):
                 result_section = {
                     'title': 'Query Results',
                     'content': result.get('description', 'Analysis completed'),
-                    'data': result.get('data'),
+                    'data': result.get('result'),
                     'type': result.get('type', 'general')
                 }
                 formatted['sections'].append(result_section)
-        
         # Financial analysis
         if 'analysis' in data:
             analysis = data['analysis']
@@ -110,7 +129,6 @@ class AnswerFormatter:
                     'data': value
                 }
                 formatted['sections'].append(section)
-        
         return formatted
     
     def _format_calculation(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -418,3 +436,27 @@ class AnswerFormatter:
             first_section = response['sections'][0]
             return f"{first_section.get('title', 'Finding')}: {first_section.get('content', '')[:50]}..."
         return "Analysis completed" 
+
+def format_llm_answer(llm_json: dict) -> str:
+    """
+    Format the LLM's JSON answer (with sources, page/line info) into a beautiful chat message.
+    Args:
+        llm_json: dict with keys 'answer' and 'sources' (list of dicts with 'page', 'lines', 'text')
+    Returns:
+        str: Markdown/HTML formatted string for chat display
+    """
+    if not llm_json or 'answer' not in llm_json:
+        return "No answer found."
+    answer = llm_json['answer']
+    sources = llm_json.get('sources', [])
+    msg = f"<div><b>Answer:</b><br>{answer}</div>"
+    if sources:
+        msg += "<div style='margin-top: 1em;'><b>Source Details:</b><ul>"
+        for src in sources:
+            page = str(src.get('page') if src.get('page') is not None else '?')
+            lines = src.get('lines', [])
+            text = str(src.get('text') if src.get('text') is not None else '')
+            lines_str = f"Lines {lines[0]}-{lines[1]}" if lines and len(lines) == 2 else ""
+            msg += f"<li><b>Page:</b> {page} {lines_str}<br><pre style='background:#f6f8fa;padding:0.5em;border-radius:4px;'>{text}</pre></li>"
+        msg += "</ul></div>"
+    return msg 

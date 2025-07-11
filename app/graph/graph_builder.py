@@ -8,6 +8,8 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 import logging
+import os  # Add os import for file operations
+import numpy as np  # Add numpy import for CSV operations
 
 from .nodes.persona_selector import PersonaSelector
 from .nodes.router import Router
@@ -115,7 +117,8 @@ class DynamicAgentGraph:
             
             # Update state
             state["persona"] = persona_result
-            state["metadata"] = state.get("metadata", {})
+            if state.get("metadata") is None:
+                state["metadata"] = {}
             state["metadata"]["persona_selected"] = persona_result.get("persona", "unknown")
             
             logger.info(f"Selected persona: {persona_result.get('persona', 'unknown')}")
@@ -123,7 +126,8 @@ class DynamicAgentGraph:
         except Exception as e:
             logger.error(f"Error in persona selector: {str(e)}")
             state["error"] = f"Persona selection failed: {str(e)}"
-        
+            if state.get("metadata") is None:
+                state["metadata"] = {}
         return state
     
     def _router_node(self, state: GraphState) -> GraphState:
@@ -139,6 +143,8 @@ class DynamicAgentGraph:
             
             # Update state
             state["route"] = route_result
+            if state.get("metadata") is None:
+                state["metadata"] = {}
             state["metadata"]["route_selected"] = route_result.get("node", "unknown")
             state["metadata"]["route_confidence"] = route_result.get("confidence", 0.0)
             
@@ -147,7 +153,10 @@ class DynamicAgentGraph:
         except Exception as e:
             logger.error(f"Error in router: {str(e)}")
             state["error"] = f"Routing failed: {str(e)}"
-        
+            if state.get("route") is None:
+                state["route"] = {}
+            if state.get("metadata") is None:
+                state["metadata"] = {}
         return state
     
     def _route_decision(self, state: GraphState) -> str:
@@ -206,17 +215,18 @@ class DynamicAgentGraph:
             # --- LLM Tool-Calling Prompt Engineering ---
             # If the query is ambiguous or could use a tool, prompt the LLM to select the tool and column.
             # Example prompt:
-            # "Given the user query: '{query}', select the most appropriate tool from [mean, sum, median, std, min, max, count, describe] and the column to apply it to."
-            # The LLM should return a JSON: {"tool": "mean", "column": "price"}
-            # The backend will then call: result = math_node.dispatch(tool, df[column].dropna().tolist())
+            # "Given the user query: '{query}', select the most appropriate tool from [mean, sum, median, std, min, max, count, describe, head, tail, sample, shape, columns, info] and the column to apply it to (if applicable)."
+            # The LLM should return a JSON: {"tool": "mean", "column": "price"} or {"tool": "head", "n": 5}
+            # The backend will then call: result = math_node.dispatch(tool, df[column].dropna().tolist()) or result = math_node.dispatch(tool, df.to_dict('records'), n=n)
             # This enables dynamic, robust tool selection for structured data analysis.
 
             # Load data if specified
             if "data_source" in context:
                 data_source = context["data_source"]
                 if data_source.endswith('.csv'):
-                    # Load CSV data
-                    load_result = self.data_loader.load_csv(f"./data/{data_source}")
+                    # Always load CSV from uploads/structured
+                    file_path = f"./data/uploads/structured/{data_source}"
+                    load_result = self.data_loader.load_csv(file_path)
                     if load_result.get("success"):
                         data_name = load_result["data_name"]
                         # Query the loaded data (which now supports LLM tool-calling logic)
@@ -227,19 +237,32 @@ class DynamicAgentGraph:
                 else:
                     result = {"error": f"Unsupported data source: {data_source}"}
             else:
-                # Try to load default data
-                load_result = self.data_loader.load_csv("./data/msft_2024.csv")
-                if load_result.get("success"):
-                    data_name = load_result["data_name"]
-                    result = self.db_node.query_data(query, data_name)
-                    result["load_info"] = load_result["summary"]
-                else:
-                    result = {"error": "No data source specified and default data not available"}
+                # Try to load the most recent file from uploads/structured
+                structured_dir = "./data/uploads/structured/"
+                try:
+                    files = [f for f in os.listdir(structured_dir) if f.endswith('.csv')]
+                    if not files:
+                        raise FileNotFoundError("No CSV files found in uploads/structured.")
+                    # Use the most recently modified file
+                    files.sort(key=lambda x: os.path.getmtime(os.path.join(structured_dir, x)), reverse=True)
+                    latest_file = files[0]
+                    file_path = os.path.join(structured_dir, latest_file)
+                    load_result = self.data_loader.load_csv(file_path)
+                    if load_result.get("success"):
+                        data_name = load_result["data_name"]
+                        result = self.db_node.query_data(query, data_name)
+                        result["load_info"] = load_result["summary"]
+                    else:
+                        result = load_result
+                except Exception as e:
+                    result = {"error": f"No data source specified and no CSV in uploads/structured: {str(e)}"}
 
             state["processed_data"] = result
         except Exception as e:
             logger.error(f"Error in database processor: {str(e)}")
             state["error"] = f"Database processing failed: {str(e)}"
+            if state.get("processed_data") is None:
+                state["processed_data"] = {}
             state["processed_data"] = {"error": str(e)}
         return state
     
@@ -328,6 +351,8 @@ class DynamicAgentGraph:
         except Exception as e:
             logger.error(f"Error in math processor: {str(e)}")
             state["error"] = f"Math processing failed: {str(e)}"
+            if state.get("processed_data") is None:
+                state["processed_data"] = {}
             state["processed_data"] = {"error": str(e)}
         
         return state
@@ -364,6 +389,8 @@ class DynamicAgentGraph:
         except Exception as e:
             logger.error(f"Error in suggestion generator: {str(e)}")
             state["error"] = f"Suggestion generation failed: {str(e)}"
+            if state.get("suggestions") is None:
+                state["suggestions"] = {}
             state["suggestions"] = {"error": str(e)}
         
         return state
@@ -391,15 +418,17 @@ class DynamicAgentGraph:
                 format_type = "general"
             
             # Format the response
+            if state.get("metadata") is None:
+                state["metadata"] = {}
             formatted_response = self.answer_formatter.format_response(
                 response_data={
                     "processed_data": processed_data,
                     "suggestions": suggestions,
-                    "metadata": state.get("metadata", {})
+                    "metadata": state["metadata"]
                 },
                 format_type=format_type,
-                persona=str(persona.get("persona", "")),
-                query=query
+                query=query,
+                persona=persona.get("persona", "")
             )
             
             state["formatted_response"] = formatted_response
@@ -407,8 +436,8 @@ class DynamicAgentGraph:
         except Exception as e:
             logger.error(f"Error in answer formatter: {str(e)}")
             state["error"] = f"Answer formatting failed: {str(e)}"
-            state["formatted_response"] = {"error": str(e)}
-        
+            if state.get("formatted_response") is None:
+                state["formatted_response"] = {}
         return state
     
     async def process_query(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:

@@ -100,3 +100,13 @@
     filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.3));
   }
 } 
+
+.chat-code-block {
+  background: #111;
+  color: #fff;
+  padding: 0.5em;
+  border-radius: 4px;
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  overflow-x: auto;
+  margin: 0.5em 0;
+} 

@@ -147,8 +147,8 @@ const CenterPanel = () => {
       </div>
 
       {/* Chat Area */}
-      <div className="flex-1 neo-panel p-4 flex flex-col">
-        <div className="flex-1 overflow-y-auto scrollbar-thin space-y-4 mb-4">
+      <div className="flex-1 neo-panel p-4 flex flex-col min-h-0">
+        <div className="flex-1 overflow-y-auto scrollbar-thin space-y-4 mb-4 max-h-full" style={{ minHeight: 0 }}>
           {chatHistory.length === 0 && (
             <div className="text-center text-dark-textSecondary py-12">
               <RobotOutlined className="text-4xl mb-4" />
@@ -178,31 +178,37 @@ const CenterPanel = () => {
                 <div className={`neo-card-flat ${chat.type === 'user' ? 'bg-dark-tertiary' : 'bg-dark-secondary'}`}>
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      <p className="text-sm leading-relaxed">{chat.message}</p>
+                      {chat.type === 'bot' && chat.message && chat.message.startsWith('<div>') ? (
+                        // Render HTML from backend (safe because backend controls formatting)
+                        <div
+                          dangerouslySetInnerHTML={{
+                            __html: chat.message.replaceAll(
+                              /<pre[^>]*>([\s\S]*?)<\/pre>/g,
+                              (match, code) => `<pre class='chat-code-block'>${code}</pre>`
+                            )
+                          }}
+                        />
+                      ) : (
+                        <p className="text-sm leading-relaxed">{chat.message}</p>
+                      )}
                       
                       {/* Suggestions */}
                       {chat.suggestions && chat.suggestions.length > 0 && (
-                        <div className="mt-3 space-y-2">
-                          <div className="flex items-center text-xs text-dark-textSecondary">
-                            <BulbOutlined className="mr-1" />
+                        <div className="mt-2 space-y-1">
+                          <div className="flex items-center text-[11px] text-dark-textSecondary font-semibold">
+                            <BulbOutlined className="mr-1 text-[12px]" />
                             Suggestions:
                           </div>
-                          {chat.suggestions.map((suggestion, i) => (
-                            <div key={i} className="neo-panel-inset p-2 text-xs">
-                              • {suggestion}
-                            </div>
-                          ))}
+                          <div className="flex flex-wrap gap-1">
+                            {chat.suggestions.map((suggestion, i) => (
+                              <span key={i} className="neo-panel-inset px-2 py-1 text-[11px] rounded bg-dark-tertiary/60 text-dark-textSecondary">
+                                {suggestion}
+                              </span>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
-                    
-                    <button
-                      onClick={() => handleCopyMessage(chat.message)}
-                      className="neo-button-small p-1 ml-2 text-dark-textSecondary hover:text-dark-text"
-                      title="Copy message"
-                    >
-                      <CopyOutlined className="text-xs" />
-                    </button>
                   </div>
                   
                   <div className="text-xs text-dark-textSecondary mt-2">
@@ -266,24 +272,6 @@ const CenterPanel = () => {
               )}
             </button>
           </div>
-        </div>
-      </div>
-
-      {/* Suggested Queries */}
-      <div className="neo-panel p-4 mt-4">
-        <h3 className="text-sm font-semibold mb-3 text-dark-textSecondary">Suggested Queries</h3>
-        <div className="grid grid-cols-1 gap-2">
-          {suggestedQueries.map((query, index) => (
-            <button
-              key={index}
-              onClick={() => handleSuggestedQuery(query)}
-              disabled={isProcessing}
-              className="neo-button-small p-3 text-left text-sm hover:text-dark-info transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <BulbOutlined className="mr-2 text-dark-warning" />
-              {query}
-            </button>
-          ))}
         </div>
       </div>
     </div>
