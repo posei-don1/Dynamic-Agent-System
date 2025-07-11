@@ -30,15 +30,18 @@ const LeftPanel = ({ selectedPersona, onPersonaChange, uploadedFiles, onFileUplo
   ];
 
   const handleFileUpload = (event) => {
-    const files = Array.from(event.target.files);
-    const fileObjects = files.map(file => ({
-      name: file.name,
-      type: file.type,
-      size: file.size,
-      id: Date.now() + Math.random()
-    }));
-    onFileUpload(fileObjects);
-  };
+    console.log("handleFileUpload");
+    const files = Array.from(event.target.files); // This is an array of File objects
+    try
+    {
+     onFileUpload(files); // Pass the real File objects directly
+      console.log("File uploaded successfully");
+    }
+    catch(error)
+    {
+      console.error("Error in handleFileUpload", error);
+    }
+};
 
   const handleRemoveFile = (fileId) => {
     // Implementation would remove file from parent state

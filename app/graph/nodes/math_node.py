@@ -363,3 +363,253 @@ class MathNode:
         except Exception as e:
             logger.error(f"Financial calculation error: {str(e)}")
             return {"error": f"Financial calculation failed: {str(e)}"} 
+
+    def moving_average(self, data: list, window: int = 5) -> dict:
+        """
+        Compute moving average for a list of price dicts (with 'date' and 'price' keys).
+        Pure Python calculation - no LLM involved.
+        Args:
+            data: List of dicts with 'date' and 'price' keys
+            window: Window size for moving average
+        Returns:
+            Dict with moving average results
+        """
+        import pandas as pd
+        try:
+            if not data or not isinstance(data, list):
+                return {"error": "No data provided for moving average calculation"}
+            df = pd.DataFrame(data)
+            if 'price' not in df.columns:
+                return {"error": "Data must contain 'price' column"}
+            
+            # Sort by date if date column exists
+            if 'date' in df.columns:
+                df = df.sort_values('date')
+            
+            # Calculate moving average using pandas rolling window
+            df['moving_average'] = df['price'].rolling(window=window, min_periods=1).mean()
+            
+            # Prepare result
+            result_columns = ['moving_average']
+            if 'date' in df.columns:
+                result_columns = ['date'] + result_columns
+            
+            result = df[result_columns].to_dict('records')
+            return {
+                "success": True, 
+                "window": window, 
+                "moving_average": result,
+                "calculation_type": "simple_moving_average"
+            }
+        except Exception as e:
+            return {"error": f"Failed to compute moving average: {str(e)}"}
+    
+    def exponential_moving_average(self, data: list, span: int = 12) -> dict:
+        """
+        Compute exponential moving average - pure Python calculation.
+        Args:
+            data: List of dicts with 'date' and 'price' keys
+            span: Span for EMA calculation
+        Returns:
+            Dict with EMA results
+        """
+        import pandas as pd
+        try:
+            if not data or not isinstance(data, list):
+                return {"error": "No data provided for EMA calculation"}
+            df = pd.DataFrame(data)
+            if 'price' not in df.columns:
+                return {"error": "Data must contain 'price' column"}
+            
+            if 'date' in df.columns:
+                df = df.sort_values('date')
+            
+            # Calculate EMA using pandas
+            df['ema'] = df['price'].ewm(span=span).mean()
+            
+            result_columns = ['ema']
+            if 'date' in df.columns:
+                result_columns = ['date'] + result_columns
+            
+            result = df[result_columns].to_dict('records')
+            return {
+                "success": True,
+                "span": span,
+                "ema": result,
+                "calculation_type": "exponential_moving_average"
+            }
+        except Exception as e:
+            return {"error": f"Failed to compute EMA: {str(e)}"}
+    
+    def bollinger_bands(self, data: list, window: int = 20, num_std: float = 2.0) -> dict:
+        """
+        Compute Bollinger Bands - pure Python calculation.
+        Args:
+            data: List of dicts with 'date' and 'price' keys
+            window: Window size for moving average
+            num_std: Number of standard deviations for bands
+        Returns:
+            Dict with Bollinger Bands results
+        """
+        import pandas as pd
+        try:
+            if not data or not isinstance(data, list):
+                return {"error": "No data provided for Bollinger Bands calculation"}
+            df = pd.DataFrame(data)
+            if 'price' not in df.columns:
+                return {"error": "Data must contain 'price' column"}
+            
+            if 'date' in df.columns:
+                df = df.sort_values('date')
+            
+            # Calculate Bollinger Bands
+            df['sma'] = df['price'].rolling(window=window).mean()
+            df['std'] = df['price'].rolling(window=window).std()
+            df['upper_band'] = df['sma'] + (df['std'] * num_std)
+            df['lower_band'] = df['sma'] - (df['std'] * num_std)
+            
+            result_columns = ['sma', 'upper_band', 'lower_band']
+            if 'date' in df.columns:
+                result_columns = ['date'] + result_columns
+            
+            result = df[result_columns].to_dict('records')
+            return {
+                "success": True,
+                "window": window,
+                "num_std": num_std,
+                "bollinger_bands": result,
+                "calculation_type": "bollinger_bands"
+            }
+        except Exception as e:
+            return {"error": f"Failed to compute Bollinger Bands: {str(e)}"}
+    
+    def rsi(self, data: list, window: int = 14) -> dict:
+        """
+        Compute Relative Strength Index (RSI) - pure Python calculation.
+        Args:
+            data: List of dicts with 'date' and 'price' keys
+            window: Window size for RSI calculation
+        Returns:
+            Dict with RSI results
+        """
+        import pandas as pd
+        try:
+            if not data or not isinstance(data, list):
+                return {"error": "No data provided for RSI calculation"}
+            df = pd.DataFrame(data)
+            if 'price' not in df.columns:
+                return {"error": "Data must contain 'price' column"}
+            
+            if 'date' in df.columns:
+                df = df.sort_values('date')
+            
+            # Calculate RSI
+            delta = df['price'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+            
+            result_columns = ['rsi']
+            if 'date' in df.columns:
+                result_columns = ['date'] + result_columns
+            
+            result = df[result_columns].to_dict('records')
+            return {
+                "success": True,
+                "window": window,
+                "rsi": result,
+                "calculation_type": "relative_strength_index"
+            }
+        except Exception as e:
+            return {"error": f"Failed to compute RSI: {str(e)}"}
+    
+    def calculate_financial_metric(self, data: list, metric_type: str, **kwargs) -> dict:
+        """
+        Calculate financial metrics using pure Python functions as tools.
+        Args:
+            data: List of dicts with price data
+            metric_type: Type of calculation to perform
+            **kwargs: Additional parameters for the calculation
+        Returns:
+            Dict with calculation results
+        """
+        try:
+            if metric_type == "moving_average":
+                return self.moving_average(data, kwargs.get("window", 20))
+            elif metric_type == "exponential_moving_average":
+                return self.exponential_moving_average(data, kwargs.get("span", 12))
+            elif metric_type == "bollinger_bands":
+                return self.bollinger_bands(data, kwargs.get("window", 20), kwargs.get("num_std", 2.0))
+            elif metric_type == "rsi":
+                return self.rsi(data, kwargs.get("window", 14))
+            else:
+                return {"error": f"Unsupported metric type: {metric_type}"}
+        except Exception as e:
+            return {"error": f"Financial metric calculation failed: {str(e)}"} 
+
+    def mean(self, data: list) -> float:
+        import statistics
+        return statistics.mean(data) if data else None
+
+    def median(self, data: list) -> float:
+        import statistics
+        return statistics.median(data) if data else None
+
+    def std(self, data: list) -> float:
+        import statistics
+        return statistics.stdev(data) if len(data) > 1 else 0.0
+
+    def sum(self, data: list) -> float:
+        return sum(data) if data else 0.0
+
+    def min(self, data: list) -> float:
+        return min(data) if data else None
+
+    def max(self, data: list) -> float:
+        return max(data) if data else None
+
+    def mode(self, data: list) -> float:
+        import statistics
+        try:
+            return statistics.mode(data)
+        except Exception:
+            return None
+
+    def count(self, data: list) -> int:
+        return len(data)
+
+    def describe(self, data: list) -> dict:
+        import statistics
+        if not data:
+            return {}
+        return {
+            'count': len(data),
+            'mean': statistics.mean(data),
+            'std': statistics.stdev(data) if len(data) > 1 else 0.0,
+            'min': min(data),
+            '25%': statistics.quantiles(data, n=4)[0] if len(data) > 3 else None,
+            '50%': statistics.median(data),
+            '75%': statistics.quantiles(data, n=4)[-1] if len(data) > 3 else None,
+            'max': max(data)
+        }
+
+    def dispatch(self, func_name: str, data: list) -> any:
+        """Dynamically call the math/stat function by name."""
+        func_map = {
+            'mean': self.mean,
+            'average': self.mean,
+            'median': self.median,
+            'std': self.std,
+            'stdev': self.std,
+            'sum': self.sum,
+            'min': self.min,
+            'max': self.max,
+            'mode': self.mode,
+            'count': self.count,
+            'describe': self.describe
+        }
+        func = func_map.get(func_name.lower())
+        if func:
+            return func(data)
+        return None 

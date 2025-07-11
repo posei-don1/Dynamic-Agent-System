@@ -101,24 +101,6 @@ def test_query_processing():
         print(f"❌ Query request failed: {str(e)}")
         return None
 
-def test_streamlit_connection():
-    """Test Streamlit UI connection"""
-    print("\n🎨 Testing Streamlit UI...")
-    
-    try:
-        response = requests.get("http://localhost:8501/healthz", timeout=5)
-        if response.status_code == 200:
-            print("✅ Streamlit UI is running!")
-            print("   🌐 Open http://localhost:8501 in your browser")
-            return True
-        else:
-            print(f"❌ Streamlit returned status: {response.status_code}")
-            return False
-    except requests.exceptions.RequestException:
-        print("❌ Streamlit UI not accessible")
-        print("💡 Make sure to start Streamlit: python run_streamlit.py")
-        return False
-
 def main():
     """Run all tests"""
     print("🚀 Dynamic Agent System Setup Test\n")
@@ -134,9 +116,6 @@ def main():
     query_result = test_query_processing()
     query_ok = query_result is not None
     
-    # Test Streamlit
-    streamlit_ok = test_streamlit_connection()
-    
     # Summary
     print("\n" + "="*50)
     print("📋 SETUP TEST SUMMARY")
@@ -145,7 +124,6 @@ def main():
     print(f"Environment Variables: {'✅ PASS' if env_ok else '❌ FAIL'}")
     print(f"Backend Health: {'✅ PASS' if backend_ok else '❌ FAIL'}")
     print(f"Query Processing: {'✅ PASS' if query_ok else '❌ FAIL'}")
-    print(f"Streamlit UI: {'✅ PASS' if streamlit_ok else '❌ FAIL'}")
     
     if health_data:
         print(f"\nSystem Mode: {health_data.get('system_mode')}")

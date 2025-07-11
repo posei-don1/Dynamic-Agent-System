@@ -70,46 +70,58 @@ class PDFProcessor:
         Returns:
             Extracted text and metadata
         """
-        logger.info(f"Processing PDF: {pdf_path}")
+        print(f"PDFProcessor: Starting extraction for {pdf_path}")
         
         try:
             if not os.path.exists(pdf_path):
+                print(f"PDFProcessor: File not found: {pdf_path}")
                 return {"error": f"PDF file not found: {pdf_path}"}
+            
+            print(f"PDFProcessor: File exists, size: {os.path.getsize(pdf_path)} bytes")
             
             # Determine if OCR should be used
             if use_ocr is None:
                 use_ocr = self.ocr_enabled
             
+            print(f"PDFProcessor: Available libraries - PyMuPDF: {self.pymupdf_available}, PyPDF2: {self.pypdf2_available}, OCR: {self.ocr_available}")
+            
             # Try text-based extraction first
+            print("PDFProcessor: Attempting text-based extraction...")
             text_result = self._extract_text_based(pdf_path)
+            print(f"PDFProcessor: Text-based result: {text_result}")
             
             if text_result.get('success') and text_result.get('text', '').strip():
-                logger.info("Successfully extracted text using text-based method")
+                print("PDFProcessor: Text-based extraction successful")
                 return text_result
             
             # Fall back to OCR if text extraction failed or returned empty
             if use_ocr and self.ocr_available:
-                logger.info("Falling back to OCR extraction")
+                print("PDFProcessor: Falling back to OCR extraction")
                 return self._extract_text_ocr(pdf_path)
             
+            print("PDFProcessor: No extraction method succeeded")
             return {"error": "Could not extract text from PDF"}
             
         except Exception as e:
-            logger.error(f"Error processing PDF: {str(e)}")
+            print(f"PDFProcessor: Exception in extract_text_from_pdf: {str(e)}")
             return {"error": f"PDF processing failed: {str(e)}"}
     
     def _extract_text_based(self, pdf_path: str) -> Dict[str, Any]:
         """Extract text from text-based PDF"""
+        print("PDFProcessor: Starting text-based extraction")
         try:
             if self.pymupdf_available:
+                print("PDFProcessor: Using PyMuPDF")
                 return self._extract_with_pymupdf(pdf_path)
             elif self.pypdf2_available:
+                print("PDFProcessor: Using PyPDF2")
                 return self._extract_with_pypdf2(pdf_path)
             else:
+                print("PDFProcessor: No PDF libraries available")
                 return {"error": "No PDF text extraction library available"}
                 
         except Exception as e:
-            logger.error(f"Text-based extraction failed: {str(e)}")
+            print(f"PDFProcessor: Text-based extraction exception: {str(e)}")
             return {"error": f"Text extraction failed: {str(e)}"}
     
     def _extract_with_pymupdf(self, pdf_path: str) -> Dict[str, Any]:
@@ -148,22 +160,28 @@ class PDFProcessor:
     
     def _extract_with_pypdf2(self, pdf_path: str) -> Dict[str, Any]:
         """Extract text using PyPDF2"""
+        print("PDFProcessor: Starting PyPDF2 extraction")
         try:
             import PyPDF2
+            print("PDFProcessor: PyPDF2 imported successfully")
             
             with open(pdf_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
+                print(f"PDFProcessor: PDF has {len(pdf_reader.pages)} pages")
                 text = ""
                 pages_info = []
                 
                 for page_num, page in enumerate(pdf_reader.pages):
                     page_text = page.extract_text()
                     text += page_text + "\n"
+                    print(f"PDFProcessor: Page {page_num + 1} extracted {len(page_text)} characters")
                     
                     pages_info.append({
                         'page_number': page_num + 1,
                         'char_count': len(page_text)
                     })
+                
+                print(f"PDFProcessor: Total text extracted: {len(text)} characters")
                 
                 return {
                     'success': True,
@@ -175,6 +193,7 @@ class PDFProcessor:
                 }
                 
         except Exception as e:
+            print(f"PDFProcessor: PyPDF2 extraction failed: {str(e)}")
             return {"error": f"PyPDF2 extraction failed: {str(e)}"}
     
     def _extract_text_ocr(self, pdf_path: str) -> Dict[str, Any]:
