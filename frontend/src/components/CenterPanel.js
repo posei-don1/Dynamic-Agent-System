@@ -10,9 +10,10 @@ import {
   CopyOutlined
 } from '@ant-design/icons';
 
-const CenterPanel = ({ currentQuery, queryResult, isProcessing, onQuerySubmit }) => {
+const CenterPanel = () => {
   const [inputValue, setInputValue] = useState('');
   const [chatHistory, setChatHistory] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -26,34 +27,70 @@ const CenterPanel = ({ currentQuery, queryResult, isProcessing, onQuerySubmit })
   ];
 
   useEffect(() => {
-    if (queryResult) {
-      setChatHistory(prev => [...prev, {
-        type: 'bot',
-        message: queryResult.formatted_response?.response || 'No response received',
-        suggestions: queryResult.formatted_response?.suggestions || [],
-        timestamp: new Date(),
-        metadata: queryResult.metadata
-      }]);
-    }
-  }, [queryResult]);
-
-  useEffect(() => {
-    if (currentQuery) {
-      setChatHistory(prev => [...prev, {
-        type: 'user',
-        message: currentQuery,
-        timestamp: new Date()
-      }]);
-    }
-  }, [currentQuery]);
-
-  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, isProcessing]);
 
+  const handleSendMessage = async (userMessage) => {
+    if (!userMessage || typeof userMessage !== 'string' || !userMessage.trim()) {
+      setChatHistory(prev => [
+        ...prev,
+        { type: 'bot', message: 'Please enter a valid question.', timestamp: new Date() }
+      ]);
+      return;
+    }
+    setChatHistory(prev => [
+      ...prev,
+      { type: 'user', message: userMessage, timestamp: new Date() }
+    ]);
+    setIsProcessing(true);
+    try {
+      // Backend expects: { query: <str>, persona: <str>, context: <dict|null> }
+      const payload = {
+        query: userMessage.trim(),
+        persona: 'default', // You can make this dynamic if you add persona selection
+        context: null // Extend this if you want to pass extra context
+      };
+      const response = await fetch('http://localhost:8000/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        let errorMsg = 'Backend error';
+        try {
+          const err = await response.json();
+          errorMsg = err.detail || JSON.stringify(err);
+        } catch {}
+        setChatHistory(prev => [
+          ...prev,
+          { type: 'bot', message: `Error: ${errorMsg}`, timestamp: new Date() }
+        ]);
+        setIsProcessing(false);
+        return;
+      }
+      const data = await response.json();
+      setChatHistory(prev => [
+        ...prev,
+        {
+          type: 'bot',
+          message: data.formatted_response?.response || data.response || JSON.stringify(data),
+          suggestions: data.formatted_response?.suggestions || [],
+          timestamp: new Date(),
+          metadata: data.metadata
+        }
+      ]);
+    } catch (error) {
+      setChatHistory(prev => [
+        ...prev,
+        { type: 'bot', message: 'Error: Could not reach backend.', timestamp: new Date() }
+      ]);
+    }
+    setIsProcessing(false);
+  };
+
   const handleSubmit = (query = inputValue) => {
     if (query.trim() && !isProcessing) {
-      onQuerySubmit(query.trim());
+      handleSendMessage(query.trim());
       setInputValue('');
     }
   };

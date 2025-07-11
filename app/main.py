@@ -101,18 +101,21 @@ async def process_query(request: QueryRequest):
         logger.info(f"Processing query: {request.query[:50]}...")
         # 1. Use LLM to classify the query
         classification_prompt = (
-            "Classify this question as 'structured' if it is about tables, columns, numbers, or data analysis, "
-            "or 'unstructured' if it is about general document content.\n"
+            "Classify this question as:\n"
+            "- 'structured' if it is about tables, columns, numbers, or data analysis\n"
+            "- 'math_financial' if it asks for financial calculations like moving averages, stock analysis, or time series calculations\n"
+            "- 'unstructured' if it is about general document content\n"
             f"Question: {request.query}\n"
-            "Answer with only 'structured' or 'unstructured'."
+            "Answer with only 'structured', 'math_financial', or 'unstructured'."
         )
+        
         classification_response = openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a classifier that only answers with 'structured' or 'unstructured'."},
+                {"role": "system", "content": "You are a classifier that only answers with 'structured', 'math_financial', or 'unstructured'."},
                 {"role": "user", "content": classification_prompt}
             ],
-            max_tokens=1,
+            max_tokens=20,
             temperature=0
         )
         classification_content = classification_response.choices[0].message.content
@@ -120,7 +123,114 @@ async def process_query(request: QueryRequest):
             classification = classification_content.strip().lower()
         else:
             classification = "unstructured"
+        
         logger.info(f"LLM classified query as: {classification}")
+        
+        # Handle math_financial queries through the graph system
+        if classification == "math_financial" and graph_system is not None:
+            # Check if we have a structured file uploaded
+            structured_path = None
+            for ext in ['.csv', '.xls', '.xlsx']:
+                candidate = os.path.join('./data/', f'structured{ext}')
+                if os.path.exists(candidate):
+                    structured_path = candidate
+                    break
+            
+            if not structured_path:
+                return QueryResponse(
+                    formatted_response={"error": "No structured data file found. Please upload a CSV or Excel file first."},
+                    metadata={"processing_time": time.time() - start_time, "system_mode": "math_financial_pipeline"},
+                    status="error"
+                )
+            
+            # Load the structured file to get column information
+            try:
+                df = load_structured_file(structured_path)
+                available_columns = df.columns.tolist()
+                
+                # Extract parameters for financial calculations with column context
+                param_extraction_prompt = (
+                    f"Extract parameters from this financial query: {request.query}\n"
+                    f"Available columns in the data: {available_columns}\n"
+                    "Return a JSON with:\n"
+                    "- symbol: stock symbol if mentioned, or infer from data columns\n"
+                    "- start_date: start date in YYYY-MM-DD format if mentioned\n"
+                    "- end_date: end date in YYYY-MM-DD format if mentioned\n"
+                    "- window: moving average window (default 20 if not specified)\n"
+                    "- calculation_type: type of calculation (e.g., 'moving_average')\n"
+                    "- target_column: which column to calculate on (price, close, value, etc.)\n"
+                    "- date_column: which column contains dates\n"
+                    f"Example: {{\"symbol\": \"MSFT\", \"start_date\": \"2024-03-01\", \"end_date\": \"2024-05-31\", \"window\": 20, \"calculation_type\": \"moving_average\", \"target_column\": \"price\", \"date_column\": \"date\"}}"
+                )
+                
+                param_response = openai.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a parameter extractor. Only return a JSON object with the requested parameters."},
+                        {"role": "user", "content": param_extraction_prompt}
+                    ],
+                    max_tokens=200,
+                    temperature=0
+                )
+                
+                param_content = param_response.choices[0].message.content
+                params = {}
+                if param_content:
+                    try:
+                        params = json.loads(param_content)
+                    except Exception:
+                        try:
+                            import ast
+                            params = ast.literal_eval(param_content)
+                        except Exception:
+                            params = {}
+                
+                # Set up context for DB+Math pipeline with dynamic file
+                context = {
+                    "db_math_pipeline": True,
+                    "file_path": structured_path,
+                    "symbol": params.get("symbol", ""),
+                    "start_date": params.get("start_date", ""),
+                    "end_date": params.get("end_date", ""),
+                    "window": params.get("window", 20),
+                    "calculation_type": params.get("calculation_type", "moving_average"),
+                    "target_column": params.get("target_column", ""),
+                    "date_column": params.get("date_column", ""),
+                    "available_columns": available_columns
+                }
+                
+                # Process through graph system
+                result = graph_system.process_query_sync(request.query, context)
+                processing_time = time.time() - start_time
+                
+                response = QueryResponse(
+                    formatted_response={
+                        "response": result.get("response", {}),
+                        "calculation_type": context["calculation_type"],
+                        "file_used": os.path.basename(structured_path),
+                        "columns_available": available_columns,
+                        "parameters_extracted": params
+                    },
+                    metadata={
+                        "processing_time": processing_time,
+                        "timestamp": time.time(),
+                        "system_mode": "math_financial_pipeline",
+                        "graph_metadata": result.get("metadata", {})
+                    },
+                    status="success" if result.get("success") else "error"
+                )
+                
+                logger.info(f"Math/Financial query processed in {processing_time:.2f}s")
+                return response
+                
+            except Exception as e:
+                logger.error(f"Error in math/financial pipeline: {str(e)}")
+                return QueryResponse(
+                    formatted_response={"error": f"Math/Financial processing failed: {str(e)}"},
+                    metadata={"processing_time": time.time() - start_time, "system_mode": "math_financial_pipeline"},
+                    status="error"
+                )
+        
         if classification == "structured":
             # 2. Use LLM to select function and args
             toolbox_description = (
@@ -155,7 +265,6 @@ async def process_query(request: QueryRequest):
                 max_tokens=100,
                 temperature=0
             )
-            import json
             import ast
             func_json = None
             func_content = function_response.choices[0].message.content
@@ -368,18 +477,35 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"Filename: {file.filename}")
         print(f"Content Type: {file.content_type}")
         print(f"File size: {file.size if hasattr(file, 'size') else 'Unknown'}")
-        safe_filename, file_bytes, file_path = await save_uploaded_file(file)
+        safe_filename = file.filename if file.filename else f"uploaded_{int(time.time())}.dat"
         ext = os.path.splitext(safe_filename)[1].lower()
         content_type = (file.content_type or "").lower()
+        file_bytes = await file.read()
+
+        # Detect file type
         file_type = detect_file_type(safe_filename, file_bytes, content_type)
         if file_type == "unsupported":
             print("=== UNSUPPORTED FILE TYPE ===")
             return {
-                "status": "error", 
+                "status": "error",
                 "message": f"Unsupported file type. Extension: '{ext}', Content-Type: '{content_type}'. Only PDF, TXT, CSV, XLS, XLSX files are supported."
             }
+
+        # Handle structured files (CSV/XLS/XLSX)
         if file_type == "structured":
-            file_path = save_structured_file(file_bytes, ext)
+            structured_dir = './data/uploads/structured/'
+            os.makedirs(structured_dir, exist_ok=True)
+            # Delete all previous files in structured_dir
+            for f in os.listdir(structured_dir):
+                try:
+                    os.remove(os.path.join(structured_dir, f))
+                except Exception as e:
+                    print(f"Error deleting file {f}: {e}")
+            # Save new file
+            file_path = os.path.join(structured_dir, safe_filename)
+            with open(file_path, 'wb') as f:
+                f.write(file_bytes)
+            print(f"Structured file saved to: {file_path}")
             text = extract_text_from_file(file_path, file_type)
             print(f"Extracted text length: {len(text)}")
             print("Skipping embedding for structured file.")
@@ -390,24 +516,62 @@ async def upload_file(file: UploadFile = File(...)):
                 "text_length": len(text),
                 "message": "Structured file uploaded successfully (no embeddings created)"
             }
-        # For unstructured files, continue with RAG
-        text = extract_text_from_file(file_path, file_type)
-        print(f"Extracted text length: {len(text)}")
-        chunks = chunk_text(text)
-        print(f"Number of chunks created: {len(chunks)}")
-        embeddings = generate_embeddings(chunks)
-        print(f"Generated {len(embeddings)} embeddings")
-        print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
-        upsert_chunks_to_pinecone(chunks, embeddings, safe_filename)
-        print("=== SUCCESS ===")
+
+        # Handle unstructured files (PDF)
+        if file_type == "pdf":
+            unstructured_dir = './data/uploads/unstructured/'
+            os.makedirs(unstructured_dir, exist_ok=True)
+            # Delete all previous files in unstructured_dir
+            for f in os.listdir(unstructured_dir):
+                try:
+                    os.remove(os.path.join(unstructured_dir, f))
+                except Exception as e:
+                    print(f"Error deleting file {f}: {e}")
+            # Save new file
+            file_path = os.path.join(unstructured_dir, safe_filename)
+            with open(file_path, 'wb') as f:
+                f.write(file_bytes)
+            print(f"Unstructured file saved to: {file_path}")
+            # Clear Pinecone index (delete all vectors)
+            pinecone_service = PineconeService()
+            pinecone_service.connect_to_index()
+            try:
+                pinecone_service.delete_all_vectors()
+                print("Cleared Pinecone index.")
+            except Exception as e:
+                print(f"Error clearing Pinecone: {e}")
+            # Optionally clear local structured data if needed (delete all files in ./data/structured/)
+            structured_dir = './data/structured/'
+            if os.path.exists(structured_dir):
+                for f in os.listdir(structured_dir):
+                    try:
+                        os.remove(os.path.join(structured_dir, f))
+                    except Exception as e:
+                        print(f"Error deleting structured file {f}: {e}")
+            # Continue with embedding, chunking, etc.
+            text = extract_text_from_file(file_path, file_type)
+            print(f"Extracted text length: {len(text)}")
+            chunks = chunk_text(text)
+            print(f"Number of chunks created: {len(chunks)}")
+            embeddings = generate_embeddings(chunks)
+            print(f"Generated {len(embeddings)} embeddings")
+            print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
+            upsert_chunks_to_pinecone(chunks, embeddings, safe_filename)
+            print("=== SUCCESS ===")
+            return {
+                "status": "success",
+                "filename": safe_filename,
+                "file_type": file_type.upper(),
+                "text_length": len(text),
+                "num_chunks": len(chunks),
+                "embedding_dim": len(embeddings[0]) if embeddings else 0,
+                "message": "Unstructured file uploaded, Pinecone cleared, and embeddings created successfully"
+            }
+
+        # For other file types (e.g., text), keep previous logic or return error
         return {
-            "status": "success",
-            "filename": safe_filename,
-            "file_type": file_type.upper(),
-            "text_length": len(text),
-            "num_chunks": len(chunks),
-            "embedding_dim": len(embeddings[0]) if embeddings else 0,
-            "message": "File uploaded and embeddings created successfully"
+            "status": "error",
+            "message": f"File type '{file_type}' not supported for this operation."
         }
     except Exception as e:
         print(f"=== UPLOAD ERROR ===")

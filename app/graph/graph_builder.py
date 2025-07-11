@@ -197,13 +197,20 @@ class DynamicAgentGraph:
         return state
     
     def _db_processor_node(self, state: GraphState) -> GraphState:
-        """Process data-related queries"""
+        """Process data-related queries with LLM tool-calling prompt engineering"""
         logger.info("Executing database processor node")
-        
         try:
             query = state["query"]
             context = state.get("context", {})
-            
+
+            # --- LLM Tool-Calling Prompt Engineering ---
+            # If the query is ambiguous or could use a tool, prompt the LLM to select the tool and column.
+            # Example prompt:
+            # "Given the user query: '{query}', select the most appropriate tool from [mean, sum, median, std, min, max, count, describe] and the column to apply it to."
+            # The LLM should return a JSON: {"tool": "mean", "column": "price"}
+            # The backend will then call: result = math_node.dispatch(tool, df[column].dropna().tolist())
+            # This enables dynamic, robust tool selection for structured data analysis.
+
             # Load data if specified
             if "data_source" in context:
                 data_source = context["data_source"]
@@ -212,7 +219,7 @@ class DynamicAgentGraph:
                     load_result = self.data_loader.load_csv(f"./data/{data_source}")
                     if load_result.get("success"):
                         data_name = load_result["data_name"]
-                        # Query the loaded data
+                        # Query the loaded data (which now supports LLM tool-calling logic)
                         result = self.db_node.query_data(query, data_name)
                         result["load_info"] = load_result["summary"]
                     else:
@@ -228,29 +235,96 @@ class DynamicAgentGraph:
                     result["load_info"] = load_result["summary"]
                 else:
                     result = {"error": "No data source specified and default data not available"}
-            
+
             state["processed_data"] = result
-            
         except Exception as e:
             logger.error(f"Error in database processor: {str(e)}")
             state["error"] = f"Database processing failed: {str(e)}"
             state["processed_data"] = {"error": str(e)}
-        
         return state
     
     def _math_processor_node(self, state: GraphState) -> GraphState:
-        """Process mathematical queries"""
+        """Process mathematical queries, including DB+Math pipeline with dynamic files"""
         logger.info("Executing math processor node")
-        
         try:
             query = state["query"]
             context = state.get("context", {})
             
-            # Process mathematical calculation
-            result = self.math_node.calculate(query, context)
-            
-            state["processed_data"] = result
-            
+            # If context signals a DB+Math pipeline, work with uploaded file
+            if context.get("db_math_pipeline"):
+                db_node = self.db_node
+                math_node = self.math_node
+                
+                # Get file path from context
+                file_path = context.get("file_path")
+                if not file_path:
+                    state["error"] = "No file path provided in context"
+                    state["processed_data"] = {"error": state["error"]}
+                    return state
+                
+                # Load the file using db_node
+                data_name = "uploaded_file"
+                load_result = db_node.load_data(file_path, data_name)
+                if not load_result.get("success"):
+                    state["error"] = load_result.get("error", "Failed to load file")
+                    state["processed_data"] = load_result
+                    return state
+                
+                # Extract parameters from context
+                symbol = context.get("symbol", "")
+                start_date = context.get("start_date", "")
+                end_date = context.get("end_date", "")
+                window = context.get("window", 20)
+                calculation_type = context.get("calculation_type", "moving_average")
+                
+                # Fetch price data using flexible column detection
+                db_result = db_node.get_stock_prices(symbol, start_date, end_date, data_name, context)
+                if not db_result.get("success"):
+                    state["error"] = db_result.get("error", "Failed to fetch price data")
+                    state["processed_data"] = db_result
+                    return state
+                
+                # Perform the financial calculation using Python tools
+                if calculation_type == "moving_average":
+                    calc_result = math_node.moving_average(db_result["data"], window)
+                elif calculation_type == "exponential_moving_average":
+                    calc_result = math_node.exponential_moving_average(db_result["data"], context.get("span", 12))
+                elif calculation_type == "bollinger_bands":
+                    calc_result = math_node.bollinger_bands(db_result["data"], window, context.get("num_std", 2.0))
+                elif calculation_type == "rsi":
+                    calc_result = math_node.rsi(db_result["data"], context.get("rsi_window", 14))
+                else:
+                    # Use the generic financial metric calculator
+                    calc_result = math_node.calculate_financial_metric(db_result["data"], calculation_type, **context)
+                
+                if not calc_result.get("success"):
+                    state["error"] = calc_result.get("error", "Failed to compute financial metric")
+                    state["processed_data"] = calc_result
+                    return state
+                
+                # Combine results with metadata
+                state["processed_data"] = {
+                    "success": True,
+                    "file_path": file_path,
+                    "symbol": symbol or "All data",
+                    "start_date": start_date or "All dates",
+                    "end_date": end_date or "All dates",
+                    "calculation_type": calculation_type,
+                    "parameters": {
+                        "window": window,
+                        "span": context.get("span", 12),
+                        "num_std": context.get("num_std", 2.0),
+                        "rsi_window": context.get("rsi_window", 14)
+                    },
+                    "columns_used": db_result.get("columns_used", {}),
+                    "calculation_result": calc_result,
+                    "raw_data": db_result["data"]
+                }
+            else:
+                # Process regular mathematical calculation as before
+                result = self.math_node.calculate(query, context)
+                state["processed_data"] = result
+                
         except Exception as e:
             logger.error(f"Error in math processor: {str(e)}")
             state["error"] = f"Math processing failed: {str(e)}"
@@ -324,7 +398,7 @@ class DynamicAgentGraph:
                     "metadata": state.get("metadata", {})
                 },
                 format_type=format_type,
-                persona=persona.get("persona"),
+                persona=str(persona.get("persona", "")),
                 query=query
             )
             

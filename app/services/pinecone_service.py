@@ -290,6 +290,21 @@ class PineconeService:
             logger.error(f"Error deleting vectors: {str(e)}")
             return {"error": f"Vector deletion failed: {str(e)}"}
     
+    def delete_all_vectors(self, namespace: str = None) -> Dict[str, Any]:
+        """Delete all vectors from the index (clear the index)."""
+        if not self.index:
+            return {"error": "Not connected to any index"}
+        try:
+            if namespace:
+                response = self.index.delete(delete_all=True, namespace=namespace)
+            else:
+                response = self.index.delete(delete_all=True)
+            logger.info("Deleted all vectors from the index" + (f" (namespace: {namespace})" if namespace else ""))
+            return {"success": True, "message": "All vectors deleted from the index", "namespace": namespace}
+        except Exception as e:
+            logger.error(f"Error deleting all vectors: {str(e)}")
+            return {"error": f"Failed to delete all vectors: {str(e)}"}
+    
     def store_document_chunks(self, document_id: str, chunks: List[Dict[str, Any]], 
                             embeddings: List[List[float]], namespace: str = None) -> Dict[str, Any]:
         """

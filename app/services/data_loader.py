@@ -31,7 +31,8 @@ class DataLoader:
     
     def load_csv(self, file_path: str, **kwargs) -> Dict[str, Any]:
         """
-        Load CSV file into DataFrame
+        Load CSV file into DataFrame, with first row as metadata
+        This follows the user's specification that the first row contains metadata for CSV files.
         
         Args:
             file_path: Path to CSV file
@@ -46,25 +47,49 @@ class DataLoader:
             if not os.path.exists(file_path):
                 return {"error": f"File not found: {file_path}"}
             
-            # Merge default parameters with provided kwargs
-            csv_params = {**self.default_csv_params, **kwargs}
+            # Read first row as metadata (as specified by user)
+            metadata = {}
+            try:
+                import csv
+                with open(file_path, newline='', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    meta_row = next(reader, None)
+                    if meta_row:
+                        metadata = dict(meta_row)
+                        logger.info(f"Extracted metadata from first row: {metadata}")
+            except Exception as e:
+                logger.warning(f"Could not extract metadata from first row: {str(e)}")
+                metadata = {}
             
-            # Load CSV file
-            df = pd.read_csv(file_path, **csv_params)
+            # Load the rest of the CSV as DataFrame, skipping the first row (metadata)
+            # The first row after headers contains metadata, so we skip row 1 (0-indexed)
+            df = pd.read_csv(file_path, skiprows=[1], **self.default_csv_params, **kwargs)
             
             # Generate data summary
             data_summary = self._generate_data_summary(df, file_path)
             
-            # Cache the data
+            # Cache the data and metadata
             cache_key = Path(file_path).stem
-            self.data_cache[cache_key] = df
+            self.data_cache[cache_key] = {
+                "data": df, 
+                "metadata": metadata,
+                "file_path": file_path,
+                "loaded_at": datetime.now().isoformat()
+            }
+            
+            logger.info(f"Successfully loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+            logger.info(f"Columns: {df.columns.tolist()}")
             
             return {
                 'success': True,
                 'data': df,
                 'data_name': cache_key,
                 'file_path': file_path,
-                'summary': data_summary
+                'summary': data_summary,
+                'metadata': metadata,
+                'shape': df.shape,
+                'columns': df.columns.tolist(),
+                'sample_data': df.head(3).to_dict('records') if len(df) > 0 else []
             }
             
         except Exception as e:
@@ -343,30 +368,35 @@ class DataLoader:
             logger.error(f"Error generating data summary: {str(e)}")
             return {'error': f'Summary generation failed: {str(e)}'}
     
-    def get_cached_data(self, data_name: str) -> Optional[pd.DataFrame]:
-        """Get cached data by name"""
-        return self.data_cache.get(data_name)
+    def get_cached_data(self, cache_key: str) -> Dict[str, Any]:
+        """
+        Get cached data by key
+        
+        Args:
+            cache_key: Key to retrieve cached data
+            
+        Returns:
+            Cached data or error
+        """
+        if cache_key in self.data_cache:
+            return {
+                "success": True,
+                "data": self.data_cache[cache_key]["data"],
+                "metadata": self.data_cache[cache_key]["metadata"],
+                "file_path": self.data_cache[cache_key]["file_path"],
+                "loaded_at": self.data_cache[cache_key]["loaded_at"]
+            }
+        else:
+            return {"error": f"No cached data found for key: {cache_key}"}
     
     def list_cached_data(self) -> List[str]:
         """List all cached data names"""
         return list(self.data_cache.keys())
     
-    def clear_cache(self, data_name: str = None) -> Dict[str, Any]:
-        """Clear data cache"""
-        try:
-            if data_name:
-                if data_name in self.data_cache:
-                    del self.data_cache[data_name]
-                    return {'success': True, 'message': f'Cleared cache for {data_name}'}
-                else:
-                    return {'error': f'Data {data_name} not found in cache'}
-            else:
-                self.data_cache.clear()
-                return {'success': True, 'message': 'Cleared all cache'}
-                
-        except Exception as e:
-            logger.error(f"Error clearing cache: {str(e)}")
-            return {'error': f'Cache clearing failed: {str(e)}'}
+    def clear_cache(self):
+        """Clear all cached data"""
+        self.data_cache.clear()
+        logger.info("Data cache cleared")
     
     def export_data(self, data_name: str, output_path: str, format: str = 'csv') -> Dict[str, Any]:
         """

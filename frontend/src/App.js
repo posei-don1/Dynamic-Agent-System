@@ -11,8 +11,42 @@ function App() {
   const [processingFlow, setProcessingFlow] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const handleFileUpload = (files) => {
-    setUploadedFiles(prev => [...prev, ...files]);
+  const handleFileUpload = async (files) => {
+    // files should be an array of File objects from the input event
+    for (const file of files) {
+      if (!(file instanceof File)) {
+        console.log("file is not a File object");
+        console.warn('Skipping non-File object:', file);
+        continue;
+      }
+      const formData = new FormData();
+      formData.append('file', file);
+      console.log("form Data " ,formData);
+      try {
+        const response = await fetch('http://localhost:8000/upload', {
+          method: 'POST',
+          body: formData // Do NOT set Content-Type manually!
+        });
+        const result = await response.json();
+        if (result.status === 'success') {
+          setUploadedFiles([
+            {
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              id: Date.now() + Math.random(),
+              file_type: result.file_type,
+              backend_message: result.message
+            }
+          ]);
+        } else {
+          alert(`Failed to upload ${file.name}: ${result.message}`);
+        }
+      } catch (error) {
+        console.error('File upload failed:', error);
+        alert(`File upload failed for ${file.name}`);
+      }
+    }
   };
 
   const handleQuerySubmit = async (query) => {
