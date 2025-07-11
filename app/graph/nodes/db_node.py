@@ -58,6 +58,11 @@ class DbNode:
         if not files:
             print("[DbNode] No CSV files found in uploads/structured/")
             return None, None, "No CSV files found."
+        if len(files) == 1:
+            # Only one file, always use it
+            filename = files[0]
+            print(f"[DbNode] Only one CSV file found, using: {filename}")
+            return os.path.join(directory, filename), filename, None
         if filename is None:
             # Use the most recently modified file
             files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)

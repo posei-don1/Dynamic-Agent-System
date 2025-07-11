@@ -109,7 +109,7 @@ async def process_query(request: QueryRequest):
             "Answer with only 'structured', 'math_financial', or 'unstructured'."
         )
         classification_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are a classifier that only answers with 'structured', 'math_financial', or 'unstructured'."},
                 {"role": "user", "content": classification_prompt}
@@ -138,7 +138,13 @@ async def process_query(request: QueryRequest):
                 if not function:
                     function = 'mean'  # Default to mean if not specified
                 # Use the latest uploaded CSV (None means auto-detect latest)
-                result = graph_system.db_node.process_query(request.query, filename=None, function=function)
+                if graph_system is None or not hasattr(graph_system, 'db_node'):
+                    return QueryResponse(
+                        formatted_response={"error": "No graph system initialized. Please upload a CSV first."},
+                        metadata={},
+                        status="error"
+                    )
+                result = graph_system.db_node.process_query(request.query, filename="", function=function)
                 if result.get("success"):
                     return QueryResponse(
                         formatted_response={
@@ -163,12 +169,176 @@ async def process_query(request: QueryRequest):
                     metadata={},
                     status="error"
                 )
+        # --- Unstructured Query Handling (PDF, text, etc.) ---
+        elif classification == "unstructured":
+            try:
+                if graph_system is None:
+                    return QueryResponse(
+                        formatted_response={"error": "No graph system initialized. Please upload a document first."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # 1. Find the latest uploaded document
+                unstructured_dir = './data/uploads/unstructured/'
+                if not os.path.exists(unstructured_dir):
+                    return QueryResponse(
+                        formatted_response={"error": "No unstructured documents directory found. Please upload a document first."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                files = [f for f in os.listdir(unstructured_dir) if f.endswith(('.pdf', '.txt'))]
+                if not files:
+                    return QueryResponse(
+                        formatted_response={"error": "No documents found. Please upload a PDF or text document first."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # Use the most recently uploaded document
+                files.sort(key=lambda x: os.path.getmtime(os.path.join(unstructured_dir, x)), reverse=True)
+                latest_file = files[0]
+                logger.info(f"Using latest document: {latest_file}")
+                
+                # 2. Create embeddings for the user query
+                from app.services.embedding_service import EmbeddingService
+                embedding_service = EmbeddingService()
+                query_embedding = embedding_service.embed_texts([request.query])[0]
+                
+                if not query_embedding:
+                    return QueryResponse(
+                        formatted_response={"error": "Failed to create query embedding."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # 3. Search Pinecone for relevant chunks
+                from app.services.pinecone_service import PineconeService
+                pinecone_service = PineconeService()
+                
+                # Connect to Pinecone index
+                connect_result = pinecone_service.connect_to_index()
+                if not connect_result or connect_result.get("error"):
+                    return QueryResponse(
+                        formatted_response={"error": f"Failed to connect to Pinecone: {connect_result.get('error', 'Unknown error')}"},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # Search for relevant chunks  
+                search_result = pinecone_service.semantic_search(
+                    query_embedding=query_embedding,
+                    top_k=5  # Get top 5 most relevant chunks
+                    # document_id not specified = search all documents
+                )
+                
+                if not search_result.get("success"):
+                    return QueryResponse(
+                        formatted_response={"error": f"Pinecone search failed: {search_result.get('error', 'Unknown error')}"},
+                        metadata={},
+                        status="error"
+                    )
+                
+                relevant_chunks = search_result.get("results", [])
+                if not relevant_chunks:
+                    return QueryResponse(
+                        formatted_response={"error": "No relevant content found in the document for your query."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # 4. Use LLM to generate an answer based on retrieved chunks
+                import openai
+                
+                # Prepare context from retrieved chunks
+                context_text = ""
+                references = []
+                for i, chunk in enumerate(relevant_chunks):
+                    chunk_text = chunk.get("text", "")
+                    chunk_id = chunk.get("chunk_id", f"chunk_{i}")
+                    relevance_score = chunk.get("relevance_score", 0.0)
+                    
+                    context_text += f"\n[Chunk {i+1}] (Relevance: {relevance_score:.3f})\n{chunk_text}\n"
+                    references.append({
+                        "chunk_id": chunk_id,
+                        "relevance_score": relevance_score,
+                        "text_preview": chunk_text[:200] + "..." if len(chunk_text) > 200 else chunk_text
+                    })
+                
+                # Generate answer using LLM
+                rag_prompt = f"""
+                Based on the following document excerpts, answer the user's question: "{request.query}"
+                
+                Document Context:
+                {context_text}
+                
+                Instructions:
+                - Provide a comprehensive answer based on the document content
+                - Reference specific chunks when relevant (e.g., "According to Chunk 1...")
+                - If the document doesn't contain enough information to answer fully, say so
+                - Be specific and cite the relevant parts of the document
+                """
+                
+                try:
+                    rag_response = openai.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant that answers questions based on document content. Always cite your sources from the provided chunks."},
+                            {"role": "user", "content": rag_prompt}
+                        ],
+                        max_tokens=500,
+                        temperature=0.3
+                    )
+                    
+                    answer = rag_response.choices[0].message.content
+                    
+                    # 5. Format the response with references
+                    formatted_result = {
+                        "type": "document_analysis",
+                        "answer": answer,
+                        "query": request.query,
+                        "document_used": latest_file,
+                        "relevant_chunks_found": len(relevant_chunks),
+                        "references": references,
+                        "search_metadata": {
+                            "total_chunks_searched": search_result.get("query_info", {}).get("top_k", 0),
+                            "embedding_model": "text-embedding-ada-002"
+                        }
+                    }
+                    
+                    return QueryResponse(
+                        formatted_response=formatted_result,
+                        metadata={
+                            "processing_type": "unstructured_rag",
+                            "document_file": latest_file,
+                            "chunks_retrieved": len(relevant_chunks)
+                        },
+                        status="success"
+                    )
+                    
+                except Exception as llm_error:
+                    logger.error(f"LLM generation failed: {str(llm_error)}")
+                    return QueryResponse(
+                        formatted_response={"error": f"Failed to generate answer: {str(llm_error)}"},
+                        metadata={},
+                        status="error"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Error in unstructured document pipeline: {str(e)}")
+                return QueryResponse(
+                    formatted_response={"error": f"Unstructured document processing failed: {str(e)}"},
+                    metadata={},
+                    status="error"
+                )
         # --- Fallback for other query types ---
-        return QueryResponse(
-            formatted_response={"error": "Only structured CSV/numpy queries are supported in this mode."},
-            metadata={},
-            status="error"
-        )
+        else:
+            return QueryResponse(
+                formatted_response={"error": "Only structured CSV/numpy and unstructured document queries are supported in this mode."},
+                metadata={},
+                status="error"
+            )
     except Exception as e:
         logger.error(f"Error in /query endpoint: {str(e)}")
         return QueryResponse(
