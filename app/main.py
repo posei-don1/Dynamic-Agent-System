@@ -18,6 +18,7 @@ from app.services.pdf_utils import PDFProcessor
 from app.services.embedding_service import EmbeddingService
 from app.services.pinecone_service import PineconeService
 from app.services.file_utils import load_structured_file, answer_structured_query, toolbox_dispatch
+from app.graph.nodes.answer_formatter import format_llm_answer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -94,7 +95,6 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
-    """Process a query using LLM-based routing: structured toolbox or RAG."""
     import openai
     start_time = time.time()
     try:
@@ -108,9 +108,8 @@ async def process_query(request: QueryRequest):
             f"Question: {request.query}\n"
             "Answer with only 'structured', 'math_financial', or 'unstructured'."
         )
-        
         classification_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are a classifier that only answers with 'structured', 'math_financial', or 'unstructured'."},
                 {"role": "user", "content": classification_prompt}
@@ -123,254 +122,230 @@ async def process_query(request: QueryRequest):
             classification = classification_content.strip().lower()
         else:
             classification = "unstructured"
-        
         logger.info(f"LLM classified query as: {classification}")
-        
-        # Handle math_financial queries through the graph system
-        if classification == "math_financial" and graph_system is not None:
-            # Check if we have a structured file uploaded
-            structured_path = None
-            for ext in ['.csv', '.xls', '.xlsx']:
-                candidate = os.path.join('./data/', f'structured{ext}')
-                if os.path.exists(candidate):
-                    structured_path = candidate
-                    break
-            
-            if not structured_path:
-                return QueryResponse(
-                    formatted_response={"error": "No structured data file found. Please upload a CSV or Excel file first."},
-                    metadata={"processing_time": time.time() - start_time, "system_mode": "math_financial_pipeline"},
-                    status="error"
-                )
-            
-            # Load the structured file to get column information
-            try:
-                df = load_structured_file(structured_path)
-                available_columns = df.columns.tolist()
-                
-                # Extract parameters for financial calculations with column context
-                param_extraction_prompt = (
-                    f"Extract parameters from this financial query: {request.query}\n"
-                    f"Available columns in the data: {available_columns}\n"
-                    "Return a JSON with:\n"
-                    "- symbol: stock symbol if mentioned, or infer from data columns\n"
-                    "- start_date: start date in YYYY-MM-DD format if mentioned\n"
-                    "- end_date: end date in YYYY-MM-DD format if mentioned\n"
-                    "- window: moving average window (default 20 if not specified)\n"
-                    "- calculation_type: type of calculation (e.g., 'moving_average')\n"
-                    "- target_column: which column to calculate on (price, close, value, etc.)\n"
-                    "- date_column: which column contains dates\n"
-                    f"Example: {{\"symbol\": \"MSFT\", \"start_date\": \"2024-03-01\", \"end_date\": \"2024-05-31\", \"window\": 20, \"calculation_type\": \"moving_average\", \"target_column\": \"price\", \"date_column\": \"date\"}}"
-                )
-                
-                param_response = openai.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a parameter extractor. Only return a JSON object with the requested parameters."},
-                        {"role": "user", "content": param_extraction_prompt}
-                    ],
-                    max_tokens=200,
-                    temperature=0
-                )
-                
-                param_content = param_response.choices[0].message.content
-                params = {}
-                if param_content:
-                    try:
-                        params = json.loads(param_content)
-                    except Exception:
-                        try:
-                            import ast
-                            params = ast.literal_eval(param_content)
-                        except Exception:
-                            params = {}
-                
-                # Set up context for DB+Math pipeline with dynamic file
-                context = {
-                    "db_math_pipeline": True,
-                    "file_path": structured_path,
-                    "symbol": params.get("symbol", ""),
-                    "start_date": params.get("start_date", ""),
-                    "end_date": params.get("end_date", ""),
-                    "window": params.get("window", 20),
-                    "calculation_type": params.get("calculation_type", "moving_average"),
-                    "target_column": params.get("target_column", ""),
-                    "date_column": params.get("date_column", ""),
-                    "available_columns": available_columns
-                }
-                
-                # Process through graph system
-                result = graph_system.process_query_sync(request.query, context)
-                processing_time = time.time() - start_time
-                
-                response = QueryResponse(
-                    formatted_response={
-                        "response": result.get("response", {}),
-                        "calculation_type": context["calculation_type"],
-                        "file_used": os.path.basename(structured_path),
-                        "columns_available": available_columns,
-                        "parameters_extracted": params
-                    },
-                    metadata={
-                        "processing_time": processing_time,
-                        "timestamp": time.time(),
-                        "system_mode": "math_financial_pipeline",
-                        "graph_metadata": result.get("metadata", {})
-                    },
-                    status="success" if result.get("success") else "error"
-                )
-                
-                logger.info(f"Math/Financial query processed in {processing_time:.2f}s")
-                return response
-                
-            except Exception as e:
-                logger.error(f"Error in math/financial pipeline: {str(e)}")
-                return QueryResponse(
-                    formatted_response={"error": f"Math/Financial processing failed: {str(e)}"},
-                    metadata={"processing_time": time.time() - start_time, "system_mode": "math_financial_pipeline"},
-                    status="error"
-                )
-        
+
+        # --- Structured Query Handling (CSV, numpy, column correction) ---
         if classification == "structured":
-            # 2. Use LLM to select function and args
-            toolbox_description = (
-                "Available functions (all operate on a pandas DataFrame 'df' from the user's uploaded file):\n"
-                "- mean(column): mean of a column\n"
-                "- sum(column): sum of a column\n"
-                "- min(column): min of a column\n"
-                "- max(column): max of a column\n"
-                "- count(): number of rows\n"
-                "- unique(column): unique values in a column\n"
-                "- median(column): median of a column\n"
-                "- std(column): standard deviation of a column\n"
-                "- describe(column): describe stats of a column\n"
-                "- value_counts(column): value counts of a column\n"
-                "- filter_rows(column, value): rows where column == value\n"
-                "- groupby_agg(group_col, agg_col, agg_func): group by group_col, aggregate agg_col with agg_func (e.g., 'mean', 'sum')\n"
-                "- sort(column, ascending=True): sort by column\n"
-                "- correlation(col1, col2): correlation between two columns\n"
-                "Return a JSON: {\"function\": <function_name>, \"args\": {<arg1>: <val1>, ...}}."
-            )
-            function_selection_prompt = (
-                f"User query: {request.query}\n"
-                f"Columns: (assume columns are present in the user's uploaded file)\n"
-                f"{toolbox_description}"
-            )
-            function_response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a function selector. Only return a JSON object specifying the function and arguments to call."},
-                    {"role": "user", "content": function_selection_prompt}
-                ],
-                max_tokens=100,
-                temperature=0
-            )
-            import ast
-            func_json = None
-            func_content = function_response.choices[0].message.content
-            if func_content is not None:
-                try:
-                    func_json = json.loads(func_content)
-                except Exception:
-                    try:
-                        func_json = ast.literal_eval(func_content)
-                    except Exception:
-                        func_json = None
-            if not func_json or "function" not in func_json or "args" not in func_json:
-                return {"status": "error", "message": "Could not parse function selection from LLM."}
-            function_name = func_json["function"]
-            args = func_json["args"]
-            # Always use the single structured file in /data/
-            structured_dir = './data/'
-            structured_path = None
-            for ext in ['.csv', '.xls', '.xlsx']:
-                candidate = os.path.join(structured_dir, f'structured{ext}')
-                if os.path.exists(candidate):
-                    structured_path = candidate
-                    break
-            if not structured_path:
-                return {"status": "error", "message": "No structured file found in /data/."}
-            df = load_structured_file(structured_path)
+            # Use the new DbNode logic
             try:
-                result = toolbox_dispatch(df, function_name, args)
+                # Try to extract a function from the query (simple keyword match)
+                function_keywords = ['mean', 'sum', 'median', 'std', 'min', 'max', 'count']
+                function = None
+                for kw in function_keywords:
+                    if kw in request.query.lower():
+                        function = kw
+                        break
+                if not function:
+                    function = 'mean'  # Default to mean if not specified
+                # Use the latest uploaded CSV (None means auto-detect latest)
+                if graph_system is None or not hasattr(graph_system, 'db_node'):
+                    return QueryResponse(
+                        formatted_response={"error": "No graph system initialized. Please upload a CSV first."},
+                        metadata={},
+                        status="error"
+                    )
+                result = graph_system.db_node.process_query(request.query, filename="", function=function)
+                if result.get("success"):
+                    return QueryResponse(
+                        formatted_response={
+                            "result": result["result"],
+                            "used_column": result["used_column"],
+                            "used_file": result["used_file"],
+                            "correction_info": result["correction_info"]
+                        },
+                        metadata={},
+                        status="success"
+                    )
+                else:
+                    return QueryResponse(
+                        formatted_response={"error": result.get("error", "Unknown error")},
+                        metadata={},
+                        status="error"
+                    )
             except Exception as e:
-                return {"status": "error", "message": f"Error executing function: {str(e)}"}
-            processing_time = time.time() - start_time
-            response = QueryResponse(
-                formatted_response={
-                    "response": str(result),
-                    "function": function_name,
-                    "args": args,
-                    "source_file": os.path.basename(structured_path)
-                },
-                metadata={
-                    "processing_time": processing_time,
-                    "timestamp": time.time(),
-                    "system_mode": "structured_toolbox"
-                },
-                status="success"
-            )
-            logger.info(f"Query answered via toolbox in {processing_time:.2f}s")
-            return response
-        # 3. Fallback to RAG
-        # 1. Embed the user query
-        embedding_service = EmbeddingService()
-        query_embedding = embedding_service.embed_texts([request.query])[0]
-
-        # 2. Query Pinecone for relevant chunks
-        pinecone_service = PineconeService()
-        pinecone_service.connect_to_index()
-        results = pinecone_service.query_vectors(
-            query_vector=query_embedding,
-            top_k=5
-        )
-        if not results.get("success"):
-            raise Exception(results.get("error", "Unknown Pinecone error"))
-        top_chunks = [match["metadata"]["text"] for match in results["results"]]
-        context = "\n\n".join(top_chunks)
-
-        # 3. Use OpenAI LLM to synthesize an answer
-        llm_prompt = (
-            f"Context:\n{context}\n\n"
-            f"Question: {request.query}\n"
-            "Answer:"
-        )
-        # Use chat.completions.create for OpenAI Python SDK v1.x
-        if not hasattr(openai, "chat") or not hasattr(openai.chat, "completions"):
-            raise RuntimeError("Your openai Python package is too old. Please upgrade to openai>=1.0.0.")
-        llm_response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",  # or "gpt-4" if you have access
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that answers questions based on the provided context."},
-                {"role": "user", "content": llm_prompt}
-            ],
-            max_tokens=512,
-            temperature=0.2
-        )
-        answer = None
-        content = getattr(llm_response.choices[0].message, "content", None)
-        if content is not None:
-            answer = content.strip()
+                logger.error(f"Error in structured CSV/numpy pipeline: {str(e)}")
+                return QueryResponse(
+                    formatted_response={"error": f"Structured CSV/numpy processing failed: {str(e)}"},
+                    metadata={},
+                    status="error"
+                )
+        # --- Unstructured Query Handling (PDF, text, etc.) ---
+        elif classification == "unstructured":
+            try:
+                if graph_system is None:
+                    return QueryResponse(
+                        formatted_response={"error": "No graph system initialized. Please upload a document first."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # 1. Find the latest uploaded document
+                unstructured_dir = './data/uploads/unstructured/'
+                if not os.path.exists(unstructured_dir):
+                    return QueryResponse(
+                        formatted_response={"error": "No unstructured documents directory found. Please upload a document first."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                files = [f for f in os.listdir(unstructured_dir) if f.endswith(('.pdf', '.txt'))]
+                if not files:
+                    return QueryResponse(
+                        formatted_response={"error": "No documents found. Please upload a PDF or text document first."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # Use the most recently uploaded document
+                files.sort(key=lambda x: os.path.getmtime(os.path.join(unstructured_dir, x)), reverse=True)
+                latest_file = files[0]
+                logger.info(f"Using latest document: {latest_file}")
+                
+                # 2. Create embeddings for the user query
+                from app.services.embedding_service import EmbeddingService
+                embedding_service = EmbeddingService()
+                query_embedding = embedding_service.embed_texts([request.query])[0]
+                
+                if not query_embedding:
+                    return QueryResponse(
+                        formatted_response={"error": "Failed to create query embedding."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # 3. Search Pinecone for relevant chunks
+                from app.services.pinecone_service import PineconeService
+                pinecone_service = PineconeService()
+                
+                # Connect to Pinecone index
+                connect_result = pinecone_service.connect_to_index()
+                if not connect_result or connect_result.get("error"):
+                    return QueryResponse(
+                        formatted_response={"error": f"Failed to connect to Pinecone: {connect_result.get('error', 'Unknown error')}"},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # Search for relevant chunks  
+                search_result = pinecone_service.semantic_search(
+                    query_embedding=query_embedding,
+                    top_k=5  # Get top 5 most relevant chunks
+                    # document_id not specified = search all documents
+                )
+                
+                if not search_result.get("success"):
+                    return QueryResponse(
+                        formatted_response={"error": f"Pinecone search failed: {search_result.get('error', 'Unknown error')}"},
+                        metadata={},
+                        status="error"
+                    )
+                
+                relevant_chunks = search_result.get("results", [])
+                if not relevant_chunks:
+                    return QueryResponse(
+                        formatted_response={"error": "No relevant content found in the document for your query."},
+                        metadata={},
+                        status="error"
+                    )
+                
+                # 4. Use LLM to generate an answer based on retrieved chunks
+                import openai
+                
+                # Prepare context from retrieved chunks
+                context_text = ""
+                references = []
+                for i, chunk in enumerate(relevant_chunks):
+                    chunk_text = chunk.get("text", "")
+                    chunk_id = chunk.get("chunk_id", f"chunk_{i}")
+                    relevance_score = chunk.get("relevance_score", 0.0)
+                    
+                    context_text += f"\n[Chunk {i+1}] (Relevance: {relevance_score:.3f})\n{chunk_text}\n"
+                    references.append({
+                        "chunk_id": chunk_id,
+                        "relevance_score": relevance_score,
+                        "text_preview": chunk_text[:200] + "..." if len(chunk_text) > 200 else chunk_text
+                    })
+                
+                # Generate answer using LLM
+                rag_prompt = f"""
+                Based on the following document excerpts, answer the user's question: "{request.query}"
+                
+                Document Context:
+                {context_text}
+                
+                Instructions:
+                - Provide a comprehensive answer based on the document content
+                - Reference specific chunks when relevant (e.g., "According to Chunk 1...")
+                - If the document doesn't contain enough information to answer fully, say so
+                - Be specific and cite the relevant parts of the document
+                """
+                
+                try:
+                    rag_response = openai.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant that answers questions based on document content. Always cite your sources from the provided chunks."},
+                            {"role": "user", "content": rag_prompt}
+                        ],
+                        max_tokens=500,
+                        temperature=0.3
+                    )
+                    
+                    answer = rag_response.choices[0].message.content
+                    
+                    # 5. Format the response with references
+                    formatted_result = {
+                        "type": "document_analysis",
+                        "answer": answer,
+                        "query": request.query,
+                        "document_used": latest_file,
+                        "relevant_chunks_found": len(relevant_chunks),
+                        "references": references,
+                        "search_metadata": {
+                            "total_chunks_searched": search_result.get("query_info", {}).get("top_k", 0),
+                            "embedding_model": "text-embedding-ada-002"
+                        }
+                    }
+                    
+                    return QueryResponse(
+                        formatted_response=formatted_result,
+                        metadata={
+                            "processing_type": "unstructured_rag",
+                            "document_file": latest_file,
+                            "chunks_retrieved": len(relevant_chunks)
+                        },
+                        status="success"
+                    )
+                    
+                except Exception as llm_error:
+                    logger.error(f"LLM generation failed: {str(llm_error)}")
+                    return QueryResponse(
+                        formatted_response={"error": f"Failed to generate answer: {str(llm_error)}"},
+                        metadata={},
+                        status="error"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Error in unstructured document pipeline: {str(e)}")
+                return QueryResponse(
+                    formatted_response={"error": f"Unstructured document processing failed: {str(e)}"},
+                    metadata={},
+                    status="error"
+                )
+        # --- Fallback for other query types ---
         else:
-            answer = "[ERROR] No answer returned from LLM."
-        processing_time = time.time() - start_time
-        response = QueryResponse(
-            formatted_response={
-                "response": answer,
-                "chunks_used": top_chunks
-            },
-            metadata={
-                "processing_time": processing_time,
-                "timestamp": time.time(),
-                "system_mode": "rag_document_qa"
-            },
-            status="success"
-        )
-        logger.info(f"Query processed via RAG in {processing_time:.2f}s")
-        return response
+            return QueryResponse(
+                formatted_response={"error": "Only structured CSV/numpy and unstructured document queries are supported in this mode."},
+                metadata={},
+                status="error"
+            )
     except Exception as e:
-        logger.error(f"Error processing query: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+        logger.error(f"Error in /query endpoint: {str(e)}")
+        return QueryResponse(
+            formatted_response={"error": f"/query endpoint failed: {str(e)}"},
+            metadata={},
+            status="error"
+        )
 
 async def save_uploaded_file(file: UploadFile) -> tuple[str, bytes, str]:
     """Save uploaded file and return (safe_filename, file_bytes, file_path)."""
@@ -509,12 +484,25 @@ async def upload_file(file: UploadFile = File(...)):
             text = extract_text_from_file(file_path, file_type)
             print(f"Extracted text length: {len(text)}")
             print("Skipping embedding for structured file.")
+            # --- Update CSV/column cache using DbNode ---
+            try:
+                if graph_system is not None:
+                    graph_system.db_node.update_column_names_cache(safe_filename)
+                    print("[UPLOAD] CSV columns cached successfully.")
+                else:
+                    from app.graph.nodes.db_node import DbNode
+                    db_node = DbNode()
+                    db_node.update_column_names_cache(safe_filename)
+                    print("[UPLOAD] CSV columns cached successfully (local instance).")
+            except Exception as meta_exc:
+                print(f"[UPLOAD] Error updating CSV column cache: {meta_exc}")
+            # --- End CSV/column cache update ---
             return {
                 "status": "success",
                 "filename": safe_filename,
                 "file_type": file_type.upper(),
                 "text_length": len(text),
-                "message": "Structured file uploaded successfully (no embeddings created)"
+                "message": "Structured file uploaded and columns cached successfully (no embeddings created)"
             }
 
         # Handle unstructured files (PDF)

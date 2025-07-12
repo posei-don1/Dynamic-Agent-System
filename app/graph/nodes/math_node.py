@@ -550,11 +550,11 @@ class MathNode:
 
     def mean(self, data: list) -> float:
         import statistics
-        return statistics.mean(data) if data else None
+        return statistics.mean(data) if data else 0.0
 
     def median(self, data: list) -> float:
         import statistics
-        return statistics.median(data) if data else None
+        return statistics.median(data) if data else 0.0
 
     def std(self, data: list) -> float:
         import statistics
@@ -564,17 +564,17 @@ class MathNode:
         return sum(data) if data else 0.0
 
     def min(self, data: list) -> float:
-        return min(data) if data else None
+        return min(data) if data else 0.0
 
     def max(self, data: list) -> float:
-        return max(data) if data else None
+        return max(data) if data else 0.0
 
     def mode(self, data: list) -> float:
         import statistics
         try:
             return statistics.mode(data)
         except Exception:
-            return None
+            return 0.0
 
     def count(self, data: list) -> int:
         return len(data)
@@ -594,8 +594,54 @@ class MathNode:
             'max': max(data)
         }
 
-    def dispatch(self, func_name: str, data: list) -> any:
-        """Dynamically call the math/stat function by name."""
+    def head(self, data: list, n: int = 5) -> list:
+        import pandas as pd
+        if not data:
+            return []
+        df = pd.DataFrame(data)
+        return df.head(n).to_dict('records')  # type: ignore
+
+    def tail(self, data: list, n: int = 5) -> list:
+        import pandas as pd
+        if not data:
+            return []
+        df = pd.DataFrame(data)
+        return df.tail(n).to_dict('records')  # type: ignore
+
+    def sample(self, data: list, n: int = 5) -> list:
+        import pandas as pd
+        if not data:
+            return []
+        df = pd.DataFrame(data)
+        return df.sample(n=min(n, len(df))).to_dict('records')  # type: ignore
+
+    def shape(self, data: list) -> tuple:
+        import pandas as pd
+        if not data:
+            return (0, 0)
+        df = pd.DataFrame(data)
+        return df.shape
+
+    def columns(self, data: list) -> list:
+        import pandas as pd
+        if not data:
+            return []
+        df = pd.DataFrame(data)
+        return list(df.columns)
+
+    def info(self, data: list) -> dict:
+        import pandas as pd
+        import io
+        if not data:
+            return {"info": "No data loaded."}
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.info(buf=buf)
+        info_str = buf.getvalue()
+        return {"info": info_str}
+
+    def dispatch(self, func_name: str, data: list, **kwargs) -> any:
+        """Dynamically call the math/stat or DataFrame function by name."""
         func_map = {
             'mean': self.mean,
             'average': self.mean,
@@ -607,9 +653,19 @@ class MathNode:
             'max': self.max,
             'mode': self.mode,
             'count': self.count,
-            'describe': self.describe
+            'describe': self.describe,
+            'head': self.head,
+            'tail': self.tail,
+            'sample': self.sample,
+            'shape': self.shape,
+            'columns': self.columns,
+            'info': self.info
         }
         func = func_map.get(func_name.lower())
         if func:
+            # Pass n if needed for head/tail/sample
+            if func_name.lower() in ['head', 'tail', 'sample']:
+                n = kwargs.get('n', 5)
+                return func(data, n)
             return func(data)
         return None 

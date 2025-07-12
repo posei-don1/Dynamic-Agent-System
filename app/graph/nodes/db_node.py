@@ -9,297 +9,254 @@ import os
 from pathlib import Path
 import sqlite3
 import difflib
+import numpy as np
 from .math_node import MathNode
+import re
 
 logger = logging.getLogger(__name__)
 
 class DbNode:
-    """Processes database queries and CSV data analysis"""
-    
+    """Processes CSV uploads and queries using numpy, with column name correction."""
     def __init__(self):
-        self.supported_formats = ['.csv', '.xlsx', '.json']
-        self.db_connection = None
-        self.loaded_data = {}
-        self.file_metadata = {}  # Store metadata for each file
-        self.math_node = MathNode()
-    
-    def load_data(self, file_path: str, data_name: str = None) -> Dict[str, Any]:
-        """
-        Load data file (CSV, Excel, JSON) and store DataFrame and metadata
-        """
+        self.supported_formats = ['.csv']
+        self.loaded_data = {}  # {filename: (np_array, header)}
+        self.column_names_by_file = {}  # {filename: [col1, col2, ...]}
+        self.last_loaded_file = None  # Track the most recently loaded file
+
+    def _find_closest(self, name, options):
+        matches = difflib.get_close_matches(name, options, n=1, cutoff=0.6)
+        return matches[0] if matches else None
+
+    def load_csv_pandas(self, file_path):
+        print(f"[DbNode] Loading CSV with pandas: {file_path}")
         try:
-            if not file_path or not isinstance(file_path, str):
-                return {"error": "No file path provided"}
-            file_ext = Path(file_path).suffix.lower()
-            if file_ext not in self.supported_formats:
-                return {"error": f"Unsupported file format: {file_ext}"}
-            import pandas as pd
-            df = pd.read_csv(file_path) if file_ext == '.csv' else pd.read_excel(file_path)
-            if not hasattr(df, 'columns'):
-                return {"error": "Loaded data is not a DataFrame"}
-            data_name = data_name or Path(file_path).stem
-            meta = {
-                'file_name': os.path.basename(file_path),
-                'columns': df.columns.tolist(),
-                'dtypes': df.dtypes.apply(lambda x: str(x)).to_dict(),
-                'shape': df.shape,
-                'sample': df.head().to_dict('records') if hasattr(df, 'head') else []
-            }
-            self.loaded_data[data_name] = {"data": df, "metadata": meta}
-            self.file_metadata[data_name] = meta
-            return {
-                'success': True,
-                'data_name': data_name,
-                'shape': df.shape,
-                'columns': df.columns.tolist(),
-                'data_types': df.dtypes.to_dict(),
-                'sample_data': df.head().to_dict('records') if hasattr(df, 'head') else [],
-                'metadata': meta,
-                'file_name': os.path.basename(file_path)
-            }
+            df = pd.read_csv(file_path)
+            print(f"[DbNode] DataFrame columns: {df.columns.tolist()}")
+            return df, df.columns.tolist()
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
-            return {"error": f"Data loading failed: {str(e)}"}
-    
-    def query_data(self, query: str, data_name: str = None) -> Dict[str, Any]:
-        """
-        Query loaded data using natural language, always include metadata
-        """
-        logger.info(f"Querying data: {query}")
-        try:
-            if data_name is None:
-                if not self.loaded_data:
-                    return {"error": "No data loaded"}
-                data_name = next(iter(self.loaded_data))
-            if data_name not in self.loaded_data:
-                return {"error": f"Data '{data_name}' not found"}
-            entry = self.loaded_data[data_name]
-            df = entry["data"] if isinstance(entry, dict) and "data" in entry else entry
-            meta = entry["metadata"] if isinstance(entry, dict) and "metadata" in entry else {}
-            import pandas as pd
-            if not isinstance(df, pd.DataFrame):
-                return {"error": "Loaded data is not a DataFrame"}
-            query_lower = query.lower()
-            # Check for metadata requests
-            if 'metadata' in query_lower:
-                meta = self.file_metadata.get(data_name, {})
-                return {'type': 'metadata', 'metadata': meta, 'description': 'File metadata'}
-            # Check for data type requests
-            if 'data type' in query_lower or 'dtype' in query_lower:
-                import difflib
-                col_name = self._extract_column_name(query, df.columns.tolist())
-                if col_name is None:
-                    matches = difflib.get_close_matches(query, df.columns.tolist(), n=1)
-                    col_name = matches[0] if matches else ''
-                dtype = str(df[col_name].dtype) if col_name and col_name in df.columns else 'unknown'
-                return {'type': 'dtype', 'column': col_name, 'dtype': dtype, 'description': f'Data type of {col_name}'}
-            # Check for math/stat function requests
-            for func in ['mean', 'average', 'median', 'std', 'sum', 'min', 'max', 'mode', 'count', 'describe']:
-                if func in query_lower:
-                    col_name = self._extract_column_name(query, df.columns.tolist())
-                    if col_name:
-                        col_data = df[col_name].dropna().tolist()
-                        result = self.math_node.dispatch(func, col_data)
-                        return {'type': func, 'column': col_name, 'result': result, 'description': f'{func} of {col_name}'}
-                    if 'row' in query_lower or 'all columns' in query_lower:
-                        numeric_cols = list(df.select_dtypes(include=['number']).columns)
-                        results = {col: self.math_node.dispatch(func, df[col].dropna().tolist()) for col in numeric_cols}
-                        return {'type': func, 'row_wise': True, 'results': results, 'description': f'{func} for all numeric columns'}
-            # Basic query patterns
-            if "show" in query_lower or "display" in query_lower:
-                if hasattr(df, 'head'):
-                    if "top" in query_lower or "first" in query_lower:
-                        n = self._extract_number(query, default=5)
-                        return {
-                            "type": "display",
-                            "data": df.head(n).to_dict('records'),
-                            "description": f"First {n} rows"
-                        }
-                    else:
-                        return {
-                            "type": "display",
-                            "data": df.to_dict('records'),
-                            "description": "All data"
-                        }
-            if "count" in query_lower:
-                return {
-                    "type": "count",
-                    "data": len(df),
-                    "description": f"Total rows: {len(df)}"
-                }
-            if "sum" in query_lower:
-                numeric_cols = list(df.select_dtypes(include=['number']).columns)
-                if len(numeric_cols) > 0:
-                    col_name = self._extract_column_name(query, numeric_cols)
-                    if col_name:
-                        return {
-                            "type": "sum",
-                            "data": df[col_name].sum(),
-                            "description": f"Sum of {col_name}"
-                        }
-            if "average" in query_lower or "mean" in query_lower:
-                numeric_cols = list(df.select_dtypes(include=['number']).columns)
-                if len(numeric_cols) > 0:
-                    col_name = self._extract_column_name(query, numeric_cols)
-                    if col_name:
-                        return {
-                            "type": "average",
-                            "data": df[col_name].mean(),
-                            "description": f"Average of {col_name}"
-                        }
-            if "max" in query_lower or "maximum" in query_lower:
-                numeric_cols = list(df.select_dtypes(include=['number']).columns)
-                if len(numeric_cols) > 0:
-                    col_name = self._extract_column_name(query, numeric_cols)
-                    if col_name:
-                        return {
-                            "type": "max",
-                            "data": df[col_name].max(),
-                            "description": f"Maximum of {col_name}"
-                        }
-            if "min" in query_lower or "minimum" in query_lower:
-                numeric_cols = list(df.select_dtypes(include=['number']).columns)
-                if len(numeric_cols) > 0:
-                    col_name = self._extract_column_name(query, numeric_cols)
-                    if col_name:
-                        return {
-                            "type": "min",
-                            "data": df[col_name].min(),
-                            "description": f"Minimum of {col_name}"
-                        }
-            if "group" in query_lower or "groupby" in query_lower:
-                group_col = self._extract_column_name(query, list(df.columns))
-                if group_col:
-                    grouped = df.groupby(group_col).size().reset_index()
-                    grouped = grouped.rename(columns={0: 'count'})
-                    return {
-                        "type": "group",
-                        "data": grouped.to_dict('records'),
-                        "description": f"Grouped by {group_col}"
-                    }
-            return {
-                "type": "info",
-                "data": {
-                    "shape": df.shape,
-                    "columns": df.columns.tolist(),
-                    "dtypes": df.dtypes.to_dict(),
-                    "sample": df.head().to_dict('records') if hasattr(df, 'head') else []
-                },
-                "description": "Dataset information"
-            }
-        except Exception as e:
-            logger.error(f"Error querying data: {str(e)}")
-            return {"error": f"Query execution failed: {str(e)}"}
-    
-    def _execute_query(self, query: str, df: pd.DataFrame) -> Dict[str, Any]:
-        """Execute natural language query on DataFrame"""
-        query_lower = query.lower()
-        
-        # Basic query patterns
-        if "show" in query_lower or "display" in query_lower:
-            if "top" in query_lower or "first" in query_lower:
-                n = self._extract_number(query, default=5)
-                return {
-                    "type": "display",
-                    "data": df.head(n).to_dict('records'),
-                    "description": f"First {n} rows"
-                }
-            else:
-                return {
-                    "type": "display",
-                    "data": df.to_dict('records'),
-                    "description": "All data"
-                }
-        
-        elif "count" in query_lower:
-            return {
-                "type": "count",
-                "data": len(df),
-                "description": f"Total rows: {len(df)}"
-            }
-        
-        elif "sum" in query_lower:
-            numeric_cols = list(df.select_dtypes(include=['number']).columns)
-            if len(numeric_cols) > 0:
-                col_name = self._extract_column_name(query, numeric_cols)
-                if col_name:
-                    return {
-                        "type": "sum",
-                        "data": df[col_name].sum(),
-                        "description": f"Sum of {col_name}"
-                    }
-        
-        elif "average" in query_lower or "mean" in query_lower:
-            numeric_cols = list(df.select_dtypes(include=['number']).columns)
-            if len(numeric_cols) > 0:
-                col_name = self._extract_column_name(query, numeric_cols)
-                if col_name:
-                    return {
-                        "type": "average",
-                        "data": df[col_name].mean(),
-                        "description": f"Average of {col_name}"
-                    }
-        
-        elif "max" in query_lower or "maximum" in query_lower:
-            numeric_cols = list(df.select_dtypes(include=['number']).columns)
-            if len(numeric_cols) > 0:
-                col_name = self._extract_column_name(query, numeric_cols)
-                if col_name:
-                    return {
-                        "type": "max",
-                        "data": df[col_name].max(),
-                        "description": f"Maximum of {col_name}"
-                    }
-        
-        elif "min" in query_lower or "minimum" in query_lower:
-            numeric_cols = list(df.select_dtypes(include=['number']).columns)
-            if len(numeric_cols) > 0:
-                col_name = self._extract_column_name(query, numeric_cols)
-                if col_name:
-                    return {
-                        "type": "min",
-                        "data": df[col_name].min(),
-                        "description": f"Minimum of {col_name}"
-                    }
-        
-        elif "group" in query_lower or "groupby" in query_lower:
-            group_col = self._extract_column_name(query, list(df.columns))
-            if group_col:
-                grouped = df.groupby(group_col).size().reset_index()
-                grouped = grouped.rename(columns={0: 'count'})
-                return {
-                    "type": "group",
-                    "data": grouped.to_dict('records'),
-                    "description": f"Grouped by {group_col}"
-                }
-        
+            print(f"[DbNode] Error loading CSV with pandas: {e}")
+            return None, None
+
+    def update_column_names_cache(self, filename):
+        file_path = os.path.join(self.get_structured_dir(), filename)
+        df, header = self.load_csv_pandas(file_path)
+        if df is not None and header is not None:
+            self.column_names_by_file[filename] = header
+            self.loaded_data[filename] = (df, header)
+            self.last_loaded_file = filename
+            print(f"[DbNode] Cached columns for {filename}: {header}")
+            return True
+        print(f"[DbNode] Failed to cache columns for {filename}")
+        return False
+
+    def get_structured_dir(self):
+        return './data/uploads/structured/'
+
+    def find_csv_file(self, filename=None):
+        directory = self.get_structured_dir()
+        files = [f for f in os.listdir(directory) if f.endswith('.csv')]
+        if not files:
+            print("[DbNode] No CSV files found in uploads/structured/")
+            return None, None, "No CSV files found."
+        if len(files) == 1:
+            # Only one file, always use it
+            filename = files[0]
+            print(f"[DbNode] Only one CSV file found, using: {filename}")
+            return os.path.join(directory, filename), filename, None
+        if filename is None:
+            # Use the most recently modified file
+            files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
+            filename = files[0]
+            print(f"[DbNode] No filename specified, using latest: {filename}")
+        if filename in files:
+            return os.path.join(directory, filename), filename, None
+        closest = self._find_closest(filename, files)
+        if closest:
+            print(f"[DbNode] Filename corrected to '{closest}'")
+            return os.path.join(directory, closest), closest, f"Filename corrected to '{closest}'"
+        print(f"[DbNode] No matching file found for '{filename}'. Available: {files}")
+        return None, None, f"No matching file found for '{filename}'. Available: {files}"
+
+    def find_column(self, col, header):
+        # Make matching case-insensitive and robust to whitespace
+        col_clean = col.strip().lower()
+        header_clean = [h.strip().lower() for h in header]
+        if col_clean in header_clean:
+            idx = header_clean.index(col_clean)
+            print(f"[DbNode] Matched column '{col}' to '{header[idx]}' (case-insensitive)")
+            return header[idx], None
+        closest = self._find_closest(col_clean, header_clean)
+        if closest:
+            idx = header_clean.index(closest)
+            print(f"[DbNode] Column corrected to '{header[idx]}' (from '{col}') (case-insensitive)")
+            return header[idx], f"Column corrected to '{header[idx]}'"
+        print(f"[DbNode] No matching column found for '{col}'. Available: {header}")
+        return None, f"No matching column found for '{col}'. Available: {header}"
+
+    def extract_column_from_query(self, query, header):
+        # Try to find a column name in the query (exact or fuzzy, case-insensitive)
+        header_clean = [h.strip().lower() for h in header]
+        for col, col_clean in zip(header, header_clean):
+            if col_clean in query.lower():
+                print(f"[DbNode] Detected column in query: {col} (case-insensitive)")
+                return col, None
+        # Fuzzy: find the closest word in the query to any column
+        words = re.findall(r'\w+', query.lower())
+        for word in words:
+            closest = self._find_closest(word, header_clean)
+            if closest:
+                idx = header_clean.index(closest)
+                print(f"[DbNode] Column corrected to '{header[idx]}' from '{word}' in query (case-insensitive)")
+                return header[idx], f"Column corrected to '{header[idx]}' from '{word}'"
+        print(f"[DbNode] No column name detected in query. Header: {header}")
+        return None, "No column name detected in query."
+
+    def process_query(self, query: str, filename: str = None, function: str = None) -> dict:
+        file_path, used_file, file_correction = self.find_csv_file(filename)
+        if not file_path:
+            return {"success": False, "error": file_correction}
+        # Load or get cached
+        if used_file in self.loaded_data:
+            df, header = self.loaded_data[used_file]
+            print(f"[DbNode] Using cached DataFrame for {used_file}")
         else:
-            # Default: return basic info
-            return {
-                "type": "info",
-                "data": {
-                    "shape": df.shape,
-                    "columns": df.columns.tolist(),
-                    "dtypes": df.dtypes.to_dict(),
-                    "sample": df.head().to_dict('records')
-                },
-                "description": "Dataset information"
-            }
-    
+            df, header = self.load_csv_pandas(file_path)
+            if df is not None and header is not None:
+                self.loaded_data[used_file] = (df, header)
+                self.column_names_by_file[used_file] = header
+                self.last_loaded_file = used_file
+        if df is None or header is None:
+            return {"success": False, "error": f"Failed to load file '{used_file}'"}
+
+        # Use LLM to extract function and column
+        import openai
+        columns = header
+        llm_prompt = (
+            f"User query: {query}\n"
+            f"Available columns: {columns}\n"
+            "Return a JSON object with:\n"
+            "- function: the operation to perform (mean, sum, min, max, count, all values, etc.)\n"
+            "- column: the column to use\n"
+            "Example: {\"function\": \"mean\", \"column\": \"Salary\"}"
+        )
+        try:
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a function and column selector for data analysis."},
+                    {"role": "user", "content": llm_prompt}
+                ],
+                max_tokens=50,
+                temperature=0
+            )
+            content = response.choices[0].message.content
+            import json
+            parsed = json.loads(content)
+            llm_function = parsed.get("function")
+            llm_column = parsed.get("column")
+            print(f"[DbNode] LLM extracted function: {llm_function}, column: {llm_column}")
+        except Exception as e:
+            print(f"[DbNode] LLM extraction failed: {e}")
+            llm_function = None
+            llm_column = None
+
+        # Use LLM's result if available, else fallback
+        used_col = llm_column if llm_column else None
+        col_correction = None
+        if used_col and used_col not in header:
+            # Try to correct with fuzzy match
+            used_col, col_correction = self.extract_column_from_query(used_col, header)
+        elif not used_col:
+            used_col, col_correction = self.extract_column_from_query(query, header)
+        if not used_col:
+            return {"success": False, "error": col_correction or "No column detected."}
+        # Extract column data
+        try:
+            col_data = df[used_col].dropna()
+            print(f"[DbNode] Extracted data for column '{used_col}': {col_data.head().tolist()}... (total {len(col_data)})")
+        except Exception as e:
+            print(f"[DbNode] Failed to extract column '{used_col}': {e}")
+            return {"success": False, "error": f"Failed to extract column '{used_col}': {e}"}
+        # Decide what operation to apply
+        math_keywords = ['mean', 'sum', 'median', 'std', 'min', 'max', 'count']
+        values_keywords = ["all values", "values", "list values", "show values", "values in", "show all", "list all"]
+        op_requested = None
+        if llm_function and llm_function.lower() in math_keywords:
+            op_requested = llm_function.lower()
+        elif function and function.lower() in math_keywords:
+            op_requested = function.lower()
+        else:
+            for kw in math_keywords:
+                if kw in query.lower():
+                    op_requested = kw
+                    break
+        values_requested = (llm_function and llm_function.lower() in values_keywords) or any(kw in query.lower() for kw in values_keywords)
+        # Apply operation if requested
+        from .math_node import MathNode
+        math_node = MathNode()
+        math_result = None
+        try:
+            if values_requested:
+                math_result = {"type": "values", "result": col_data.tolist(), "description": f"All values in column '{used_col}'"}
+            elif op_requested:
+                print(f"[DbNode] Passing data to MathNode for function '{op_requested}'")
+                if hasattr(math_node, 'dispatch'):
+                    math_result = math_node.dispatch(op_requested, col_data.tolist())
+                else:
+                    func_map = {
+                        'mean': pd.Series.mean,
+                        'sum': pd.Series.sum,
+                        'median': pd.Series.median,
+                        'std': pd.Series.std,
+                        'min': pd.Series.min,
+                        'max': pd.Series.max,
+                        'count': lambda x: len(x)
+                    }
+                    func = func_map.get(op_requested)
+                    if not func:
+                        return {"success": False, "error": f"Unsupported function '{op_requested}'. Supported: {math_keywords}"}
+                    math_result = {"type": op_requested, "result": func(col_data), "description": f"{op_requested} of column '{used_col}'"}
+                print(f"[DbNode] MathNode result: {math_result}")
+            else:
+                print(f"[DbNode] No math operation requested, returning column data only.")
+                math_result = {"type": "column_data", "result": col_data.tolist(), "description": f"Data for column '{used_col}'"}
+        except Exception as e:
+            print(f"[DbNode] MathNode failed: {e}")
+            return {"success": False, "error": f"Math operation failed: {e}"}
+        correction_info = []
+        if file_correction:
+            correction_info.append(file_correction)
+        if col_correction:
+            correction_info.append(col_correction)
+        return {
+            "success": True,
+            "result": math_result,
+            "used_column": used_col,
+            "used_file": used_file,
+            "correction_info": correction_info
+        }
+
+    def _is_number(self, s):
+        try:
+            float(s)
+            return True
+        except Exception:
+            return False
+
     def _extract_number(self, text: str, default: int = 5) -> int:
         """Extract number from text"""
         import re
-        numbers = re.findall(r'\d+', text)
+        numbers = re.findall(r'\d+', text) if text else []
         return int(numbers[0]) if numbers else default
-    
-    def _extract_column_name(self, text: str, columns: List[str]) -> Optional[str]:
+
+    def _extract_column_name(self, text: str, columns: List[str]) -> str:
         """Extract column name from text"""
-        text_lower = text.lower()
+        text_lower = text.lower() if text else ''
         for col in columns:
             if col.lower() in text_lower:
                 return col
-        return columns[0] if columns else None
-    
+        return columns[0] if columns else ''
+
     def analyze_financial_data(self, data_name: str = None) -> Dict[str, Any]:
         """Specialized financial data analysis"""
         logger.info(f"Analyzing financial data: {data_name}")
@@ -308,7 +265,7 @@ class DbNode:
             if data_name is None:
                 if not self.loaded_data:
                     return {"error": "No data loaded"}
-                data_name = next(iter(self.loaded_data))
+                data_name = next(iter(self.loaded_data)) or "data"
             
             if data_name not in self.loaded_data:
                 return {"error": f"Data '{data_name}' not found"}
@@ -373,7 +330,7 @@ class DbNode:
         if data_name is None:
             if not self.loaded_data:
                 return {"error": "No data loaded"}
-            data_name = next(iter(self.loaded_data))
+            data_name = next(iter(self.loaded_data)) or "data"
         if data_name not in self.loaded_data:
             return {"error": f"Data '{data_name}' not found"}
         entry = self.loaded_data[data_name]
@@ -410,15 +367,14 @@ class DbNode:
             if data_name is None:
                 if not self.loaded_data:
                     return {"error": "No data loaded"}
-                data_name = next(iter(self.loaded_data))
+                data_name = next(iter(self.loaded_data)) or "data"
             if data_name not in self.loaded_data:
                 return {"error": f"Data '{data_name}' not found"}
             entry = self.loaded_data[data_name]
             df = entry["data"] if isinstance(entry, dict) and "data" in entry else entry
             if not isinstance(df, pd.DataFrame):
                 return {"error": "Loaded data is not a DataFrame"}
-            
-            # Flexible column detection using context or intelligent guessing
+            context = context or {}
             available_columns = context.get("available_columns", df.columns.tolist()) if context else df.columns.tolist()
             
             # Find columns intelligently
@@ -444,7 +400,7 @@ class DbNode:
             # If no date column found, use index if it's datetime
             if not date_col and hasattr(df.index, 'dtype') and 'datetime' in str(df.index.dtype):
                 df = df.reset_index()
-                date_col = df.columns[0]
+                date_col = df.columns[0] if len(df.columns) > 0 else ''
             
             if not price_col:
                 return {"error": f"No price column found. Available columns: {available_columns}"}
@@ -458,7 +414,7 @@ class DbNode:
                 df_filtered = df.copy()
             
             # Filter by date range if date column exists and dates are specified
-            if date_col and start_date and end_date:
+            if date_col and start_date and end_date and isinstance(date_col, str) and date_col in df_filtered.columns:
                 try:
                     df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
                     df_filtered = df_filtered[(df_filtered[date_col] >= pd.to_datetime(start_date)) & (df_filtered[date_col] <= pd.to_datetime(end_date))]
@@ -466,18 +422,19 @@ class DbNode:
                     return {"error": f"Date filtering failed: {str(e)}"}
             
             # Sort by date if date column exists
-            if date_col:
+            if date_col and isinstance(date_col, str) and date_col in df_filtered.columns:
                 df_filtered = df_filtered.sort_values(by=date_col)
             
             # Prepare return data
-            return_columns = [date_col, price_col] if date_col else [price_col]
+            return_columns = [date_col, price_col] if date_col and isinstance(date_col, str) and date_col in df_filtered.columns else [price_col]
             return_data = df_filtered[return_columns].copy()
             
             # Rename columns for consistency
             column_mapping = {}
-            if date_col:
+            if date_col and isinstance(date_col, str) and date_col in return_data.columns:
                 column_mapping[date_col] = "date"
-            column_mapping[price_col] = "price"
+            if price_col and isinstance(price_col, str) and price_col in return_data.columns:
+                column_mapping[price_col] = "price"
             return_data = return_data.rename(columns=column_mapping)
             
             return {
