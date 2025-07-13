@@ -12,6 +12,11 @@ class PersonaSelector:
     
     def __init__(self):
         self.personas = {
+            "general": {
+                "description": "General assistant with broad knowledge and analytical capabilities",
+                "keywords": ["general", "help", "assist", "explain", "what", "how", "why"],
+                "capabilities": ["general analysis", "information synthesis", "problem solving"]
+            },
             "financial_analyst": {
                 "description": "Expert in financial analysis, market trends, and investment strategies",
                 "keywords": ["financial", "investment", "market", "stock", "revenue", "profit", "analysis"],
@@ -36,7 +41,7 @@ class PersonaSelector:
     
     def select_persona(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        Select the most appropriate persona based on query content
+        Select the most appropriate persona based on query content and context
         
         Args:
             query: User query text
@@ -47,6 +52,21 @@ class PersonaSelector:
         """
         logger.info(f"Selecting persona for query: {query[:100]}...")
         
+        # Check if a specific persona was requested in context
+        if context and "requested_persona" in context:
+            requested_persona = context["requested_persona"]
+            if requested_persona in self.personas:
+                logger.info(f"Using requested persona: {requested_persona}")
+                return {
+                    "persona": requested_persona,
+                    "persona_info": self.personas[requested_persona],
+                    "confidence": 1.0,
+                    "selection_method": "user_requested"
+                }
+            else:
+                logger.warning(f"Requested persona '{requested_persona}' not found, falling back to automatic selection")
+        
+        # Automatic persona selection based on query content
         query_lower = query.lower()
         persona_scores = {}
         
@@ -61,16 +81,17 @@ class PersonaSelector:
         # Select persona with highest score
         selected_persona = max(persona_scores, key=persona_scores.get)
         
-        # Default to business consultant if no clear match
+        # Default to general if no clear match
         if persona_scores[selected_persona] == 0:
-            selected_persona = "business_consultant"
+            selected_persona = "general"
         
-        logger.info(f"Selected persona: {selected_persona}")
+        logger.info(f"Auto-selected persona: {selected_persona}")
         
         return {
             "persona": selected_persona,
             "persona_info": self.personas[selected_persona],
-            "confidence": persona_scores[selected_persona] / len(self.personas[selected_persona]["keywords"])
+            "confidence": persona_scores[selected_persona] / len(self.personas[selected_persona]["keywords"]),
+            "selection_method": "automatic"
         }
     
     def get_persona_prompt(self, persona_name: str) -> str:

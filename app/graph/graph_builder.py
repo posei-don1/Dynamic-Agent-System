@@ -18,9 +18,9 @@ from .nodes.db_node import DbNode
 from .nodes.math_node import MathNode
 from .nodes.answer_formatter import AnswerFormatter
 from .nodes.suggestion_node import SuggestionNode
-from ..services.pdf_utils import PDFProcessor
-from ..services.pinecone_service import PineconeService
-from ..services.data_loader import DataLoader
+from .services.pdf_utils import PDFProcessor
+from .services.pinecone_service import PineconeService
+from .services.data_loader import DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -178,12 +178,17 @@ class DynamicAgentGraph:
         return node_mapping.get(selected_node, "db_processor")
     
     def _doc_processor_node(self, state: GraphState) -> GraphState:
-        """Process document-related queries"""
+        """Process document-related queries with RAG for unstructured queries"""
         logger.info("Executing document processor node")
         
         try:
             query = state["query"]
             context = state.get("context", {})
+            route_info = state.get("route", {})
+            query_type = route_info.get("query_type", "unstructured")
+            
+            # Add query type to context
+            context["query_type"] = query_type
             
             # Check if we have a document to process
             if "document_path" in context:
@@ -193,8 +198,12 @@ class DynamicAgentGraph:
                 contract_path = context["contract_path"]
                 result = self.doc_node.analyze_contract(contract_path)
             else:
-                # If no document specified, use sample contract
-                result = self.doc_node.analyze_contract("./data/sample_contract.pdf")
+                # For unstructured queries, use RAG processing
+                if query_type == "unstructured":
+                    result = self.doc_node.process_document(None, query, context)
+                else:
+                    # If no document specified, use sample contract
+                    result = self.doc_node.analyze_contract("./data/sample_contract.pdf")
             
             state["processed_data"] = result
             
@@ -206,56 +215,67 @@ class DynamicAgentGraph:
         return state
     
     def _db_processor_node(self, state: GraphState) -> GraphState:
-        """Process data-related queries with LLM tool-calling prompt engineering"""
+        """Process data-related queries with LLM tool-calling prompt engineering for structured queries"""
         logger.info("Executing database processor node")
         try:
             query = state["query"]
             context = state.get("context", {})
-
-            # --- LLM Tool-Calling Prompt Engineering ---
-            # If the query is ambiguous or could use a tool, prompt the LLM to select the tool and column.
-            # Example prompt:
-            # "Given the user query: '{query}', select the most appropriate tool from [mean, sum, median, std, min, max, count, describe, head, tail, sample, shape, columns, info] and the column to apply it to (if applicable)."
-            # The LLM should return a JSON: {"tool": "mean", "column": "price"} or {"tool": "head", "n": 5}
-            # The backend will then call: result = math_node.dispatch(tool, df[column].dropna().tolist()) or result = math_node.dispatch(tool, df.to_dict('records'), n=n)
-            # This enables dynamic, robust tool selection for structured data analysis.
-
-            # Load data if specified
-            if "data_source" in context:
-                data_source = context["data_source"]
-                if data_source.endswith('.csv'):
-                    # Always load CSV from uploads/structured
-                    file_path = f"./data/uploads/structured/{data_source}"
-                    load_result = self.data_loader.load_csv(file_path)
-                    if load_result.get("success"):
-                        data_name = load_result["data_name"]
-                        # Query the loaded data (which now supports LLM tool-calling logic)
-                        result = self.db_node.query_data(query, data_name)
-                        result["load_info"] = load_result["summary"]
-                    else:
-                        result = load_result
-                else:
-                    result = {"error": f"Unsupported data source: {data_source}"}
+            route_info = state.get("route", {})
+            query_type = route_info.get("query_type", "structured")
+            
+            # Add query type to context
+            context["query_type"] = query_type
+            
+            # For structured queries, use the existing CSV processing logic
+            if query_type == "structured":
+                # Try to extract a function from the query (simple keyword match)
+                function_keywords = ['mean', 'sum', 'median', 'std', 'min', 'max', 'count']
+                function = None
+                for kw in function_keywords:
+                    if kw in query.lower():
+                        function = kw
+                        break
+                
+                # Use the latest uploaded CSV (None means auto-detect latest)
+                result = self.db_node.process_query(query, filename="", function=function)
             else:
-                # Try to load the most recent file from uploads/structured
-                structured_dir = "./data/uploads/structured/"
-                try:
-                    files = [f for f in os.listdir(structured_dir) if f.endswith('.csv')]
-                    if not files:
-                        raise FileNotFoundError("No CSV files found in uploads/structured.")
-                    # Use the most recently modified file
-                    files.sort(key=lambda x: os.path.getmtime(os.path.join(structured_dir, x)), reverse=True)
-                    latest_file = files[0]
-                    file_path = os.path.join(structured_dir, latest_file)
-                    load_result = self.data_loader.load_csv(file_path)
-                    if load_result.get("success"):
-                        data_name = load_result["data_name"]
-                        result = self.db_node.query_data(query, data_name)
-                        result["load_info"] = load_result["summary"]
+                # For non-structured queries, fall back to general data processing
+                # Load data if specified
+                if "data_source" in context:
+                    data_source = context["data_source"]
+                    if data_source.endswith('.csv'):
+                        # Always load CSV from uploads/structured
+                        file_path = f"./data/uploads/structured/{data_source}"
+                        load_result = self.data_loader.load_csv(file_path)
+                        if load_result.get("success"):
+                            data_name = load_result["data_name"]
+                            # Query the loaded data (which now supports LLM tool-calling logic)
+                            result = self.db_node.query_data(query, data_name)
+                            result["load_info"] = load_result["summary"]
+                        else:
+                            result = load_result
                     else:
-                        result = load_result
-                except Exception as e:
-                    result = {"error": f"No data source specified and no CSV in uploads/structured: {str(e)}"}
+                        result = {"error": f"Unsupported data source: {data_source}"}
+                else:
+                    # Try to load the most recent file from uploads/structured
+                    structured_dir = "./data/uploads/structured/"
+                    try:
+                        files = [f for f in os.listdir(structured_dir) if f.endswith('.csv')]
+                        if not files:
+                            raise FileNotFoundError("No CSV files found in uploads/structured.")
+                        # Use the most recently modified file
+                        files.sort(key=lambda x: os.path.getmtime(os.path.join(structured_dir, x)), reverse=True)
+                        latest_file = files[0]
+                        file_path = os.path.join(structured_dir, latest_file)
+                        load_result = self.data_loader.load_csv(file_path)
+                        if load_result.get("success"):
+                            data_name = load_result["data_name"]
+                            result = self.db_node.query_data(query, data_name)
+                            result["load_info"] = load_result["summary"]
+                        else:
+                            result = load_result
+                    except Exception as e:
+                        result = {"error": f"No data source specified and no CSV in uploads/structured: {str(e)}"}
 
             state["processed_data"] = result
         except Exception as e:
@@ -365,7 +385,7 @@ class DynamicAgentGraph:
             processed_data = state.get("processed_data", {})
             persona = state.get("persona", {})
             context = state.get("context", {})
-            
+                    
             # Determine suggestion type based on persona
             persona_name = persona.get("persona", "general")
             suggestion_type_mapping = {
@@ -377,11 +397,28 @@ class DynamicAgentGraph:
             
             suggestion_type = suggestion_type_mapping.get(persona_name, "general")
             
-            # Generate suggestions
+            # Extract answer content from processed data
+            answer_content = ""
+            if processed_data.get("answer"):
+                answer_content = processed_data["answer"]
+            elif processed_data.get("result", {}).get("data"):
+                # For data queries, use the result as answer content
+                answer_content = str(processed_data["result"]["data"])
+            elif processed_data.get("result", {}).get("message"):
+                # For other types, use the message
+                answer_content = processed_data["result"]["message"]
+            else:
+                # Fallback to a generic message
+                answer_content = "Query processed successfully"
+            
+            # Add the original query to context for better follow-up questions
+            enhanced_context = context.copy() if context else {}
+            enhanced_context["query"] = state.get("query", "")
+            
+            # Generate suggestions based on the answer content
             suggestions = self.suggestion_node.generate_suggestions(
-                processed_data, 
-                suggestion_type, 
-                context
+                answer_content, 
+                enhanced_context
             )
             
             state["suggestions"] = suggestions
@@ -395,7 +432,7 @@ class DynamicAgentGraph:
         
         return state
     
-    def _answer_formatter_node(self, state: GraphState) -> GraphState:
+    def     _answer_formatter_node(self, state: GraphState) -> GraphState:
         """Format the final response"""
         logger.info("Executing answer formatter node")
         
@@ -408,10 +445,13 @@ class DynamicAgentGraph:
             # Determine format type based on processed data
             if processed_data.get("analysis_type") == "contract":
                 format_type = "document_analysis"
-            elif "result" in processed_data and processed_data["result"].get("type") in ["display", "count", "sum", "average"]:
+            elif "result" in processed_data and processed_data["result"].get("type") in ["display", "count", "sum", "average", "mean", "median", "std", "min", "max", "mode"]:
                 format_type = "data_summary"
             elif processed_data.get("calculation_type"):
                 format_type = "calculation"
+            elif suggestions.get("suggestions") and processed_data.get("answer"):
+                # If we have both suggestions AND an actual answer, use combined format
+                format_type = "combined_response"
             elif suggestions.get("suggestions"):
                 format_type = "suggestion"
             else:

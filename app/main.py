@@ -14,10 +14,10 @@ load_dotenv()
 
 # Import the actual graph system
 from .graph.graph_builder import DynamicAgentGraph
-from app.services.pdf_utils import PDFProcessor
-from app.services.embedding_service import EmbeddingService
-from app.services.pinecone_service import PineconeService
-from app.services.file_utils import load_structured_file, answer_structured_query, toolbox_dispatch
+from app.graph.services.pdf_utils import PDFProcessor
+from app.graph.services.embedding_service import EmbeddingService
+from app.graph.services.pinecone_service import PineconeService
+from app.graph.services.file_utils import load_structured_file, answer_structured_query, toolbox_dispatch
 from app.graph.nodes.answer_formatter import format_llm_answer
 
 # Configure logging
@@ -95,257 +95,152 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
-    import openai
     start_time = time.time()
     try:
-        logger.info(f"Processing query: {request.query[:50]}...")
-        # 1. Use LLM to classify the query
-        classification_prompt = (
-            "Classify this question as:\n"
-            "- 'structured' if it is about tables, columns, numbers, or data analysis\n"
-            "- 'math_financial' if it asks for financial calculations like moving averages, stock analysis, or time series calculations\n"
-            "- 'unstructured' if it is about general document content\n"
-            f"Question: {request.query}\n"
-            "Answer with only 'structured', 'math_financial', or 'unstructured'."
-        )
-        classification_response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a classifier that only answers with 'structured', 'math_financial', or 'unstructured'."},
-                {"role": "user", "content": classification_prompt}
-            ],
-            max_tokens=20,
-            temperature=0
-        )
-        classification_content = classification_response.choices[0].message.content
-        if classification_content is not None:
-            classification = classification_content.strip().lower()
-        else:
-            classification = "unstructured"
-        logger.info(f"LLM classified query as: {classification}")
-
-        # --- Structured Query Handling (CSV, numpy, column correction) ---
-        if classification == "structured":
-            # Use the new DbNode logic
-            try:
-                # Try to extract a function from the query (simple keyword match)
-                function_keywords = ['mean', 'sum', 'median', 'std', 'min', 'max', 'count']
-                function = None
-                for kw in function_keywords:
-                    if kw in request.query.lower():
-                        function = kw
-                        break
-                if not function:
-                    function = 'mean'  # Default to mean if not specified
-                # Use the latest uploaded CSV (None means auto-detect latest)
-                if graph_system is None or not hasattr(graph_system, 'db_node'):
-                    return QueryResponse(
-                        formatted_response={"error": "No graph system initialized. Please upload a CSV first."},
-                        metadata={},
-                        status="error"
-                    )
-                result = graph_system.db_node.process_query(request.query, filename="", function=function)
-                if result.get("success"):
-                    return QueryResponse(
-                        formatted_response={
-                            "result": result["result"],
-                            "used_column": result["used_column"],
-                            "used_file": result["used_file"],
-                            "correction_info": result["correction_info"]
-                        },
-                        metadata={},
-                        status="success"
-                    )
-                else:
-                    return QueryResponse(
-                        formatted_response={"error": result.get("error", "Unknown error")},
-                        metadata={},
-                        status="error"
-                    )
-            except Exception as e:
-                logger.error(f"Error in structured CSV/numpy pipeline: {str(e)}")
-                return QueryResponse(
-                    formatted_response={"error": f"Structured CSV/numpy processing failed: {str(e)}"},
-                    metadata={},
-                    status="error"
-                )
-        # --- Unstructured Query Handling (PDF, text, etc.) ---
-        elif classification == "unstructured":
-            try:
-                if graph_system is None:
-                    return QueryResponse(
-                        formatted_response={"error": "No graph system initialized. Please upload a document first."},
-                        metadata={},
-                        status="error"
-                    )
-                
-                # 1. Find the latest uploaded document
-                unstructured_dir = './data/uploads/unstructured/'
-                if not os.path.exists(unstructured_dir):
-                    return QueryResponse(
-                        formatted_response={"error": "No unstructured documents directory found. Please upload a document first."},
-                        metadata={},
-                        status="error"
-                    )
-                
-                files = [f for f in os.listdir(unstructured_dir) if f.endswith(('.pdf', '.txt'))]
-                if not files:
-                    return QueryResponse(
-                        formatted_response={"error": "No documents found. Please upload a PDF or text document first."},
-                        metadata={},
-                        status="error"
-                    )
-                
-                # Use the most recently uploaded document
-                files.sort(key=lambda x: os.path.getmtime(os.path.join(unstructured_dir, x)), reverse=True)
-                latest_file = files[0]
-                logger.info(f"Using latest document: {latest_file}")
-                
-                # 2. Create embeddings for the user query
-                from app.services.embedding_service import EmbeddingService
-                embedding_service = EmbeddingService()
-                query_embedding = embedding_service.embed_texts([request.query])[0]
-                
-                if not query_embedding:
-                    return QueryResponse(
-                        formatted_response={"error": "Failed to create query embedding."},
-                        metadata={},
-                        status="error"
-                    )
-                
-                # 3. Search Pinecone for relevant chunks
-                from app.services.pinecone_service import PineconeService
-                pinecone_service = PineconeService()
-                
-                # Connect to Pinecone index
-                connect_result = pinecone_service.connect_to_index()
-                if not connect_result or connect_result.get("error"):
-                    return QueryResponse(
-                        formatted_response={"error": f"Failed to connect to Pinecone: {connect_result.get('error', 'Unknown error')}"},
-                        metadata={},
-                        status="error"
-                    )
-                
-                # Search for relevant chunks  
-                search_result = pinecone_service.semantic_search(
-                    query_embedding=query_embedding,
-                    top_k=5  # Get top 5 most relevant chunks
-                    # document_id not specified = search all documents
-                )
-                
-                if not search_result.get("success"):
-                    return QueryResponse(
-                        formatted_response={"error": f"Pinecone search failed: {search_result.get('error', 'Unknown error')}"},
-                        metadata={},
-                        status="error"
-                    )
-                
-                relevant_chunks = search_result.get("results", [])
-                if not relevant_chunks:
-                    return QueryResponse(
-                        formatted_response={"error": "No relevant content found in the document for your query."},
-                        metadata={},
-                        status="error"
-                    )
-                
-                # 4. Use LLM to generate an answer based on retrieved chunks
-                import openai
-                
-                # Prepare context from retrieved chunks
-                context_text = ""
-                references = []
-                for i, chunk in enumerate(relevant_chunks):
-                    chunk_text = chunk.get("text", "")
-                    chunk_id = chunk.get("chunk_id", f"chunk_{i}")
-                    relevance_score = chunk.get("relevance_score", 0.0)
-                    
-                    context_text += f"\n[Chunk {i+1}] (Relevance: {relevance_score:.3f})\n{chunk_text}\n"
-                    references.append({
-                        "chunk_id": chunk_id,
-                        "relevance_score": relevance_score,
-                        "text_preview": chunk_text[:200] + "..." if len(chunk_text) > 200 else chunk_text
-                    })
-                
-                # Generate answer using LLM
-                rag_prompt = f"""
-                Based on the following document excerpts, answer the user's question: "{request.query}"
-                
-                Document Context:
-                {context_text}
-                
-                Instructions:
-                - Provide a comprehensive answer based on the document content
-                - Reference specific chunks when relevant (e.g., "According to Chunk 1...")
-                - If the document doesn't contain enough information to answer fully, say so
-                - Be specific and cite the relevant parts of the document
-                """
-                
-                try:
-                    rag_response = openai.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {"role": "system", "content": "You are a helpful assistant that answers questions based on document content. Always cite your sources from the provided chunks."},
-                            {"role": "user", "content": rag_prompt}
-                        ],
-                        max_tokens=500,
-                        temperature=0.3
-                    )
-                    
-                    answer = rag_response.choices[0].message.content
-                    
-                    # 5. Format the response with references
-                    formatted_result = {
-                        "type": "document_analysis",
-                        "answer": answer,
-                        "query": request.query,
-                        "document_used": latest_file,
-                        "relevant_chunks_found": len(relevant_chunks),
-                        "references": references,
-                        "search_metadata": {
-                            "total_chunks_searched": search_result.get("query_info", {}).get("top_k", 0),
-                            "embedding_model": "text-embedding-ada-002"
-                        }
-                    }
-                    
-                    return QueryResponse(
-                        formatted_response=formatted_result,
-                        metadata={
-                            "processing_type": "unstructured_rag",
-                            "document_file": latest_file,
-                            "chunks_retrieved": len(relevant_chunks)
-                        },
-                        status="success"
-                    )
-                    
-                except Exception as llm_error:
-                    logger.error(f"LLM generation failed: {str(llm_error)}")
-                    return QueryResponse(
-                        formatted_response={"error": f"Failed to generate answer: {str(llm_error)}"},
-                        metadata={},
-                        status="error"
-                    )
-                
-            except Exception as e:
-                logger.error(f"Error in unstructured document pipeline: {str(e)}")
-                return QueryResponse(
-                    formatted_response={"error": f"Unstructured document processing failed: {str(e)}"},
-                    metadata={},
-                    status="error"
-                )
-        # --- Fallback for other query types ---
-        else:
+        logger.info(f"Processing query through LangGraph: {request.query[:50]}...")
+        
+        # Check if graph system is available
+        if graph_system is None:
             return QueryResponse(
-                formatted_response={"error": "Only structured CSV/numpy and unstructured document queries are supported in this mode."},
-                metadata={},
+                formatted_response={"error": "LangGraph system not initialized. Please check your API keys and restart the server."},
+                metadata={"system_mode": "error", "error": "Graph system unavailable"},
                 status="error"
             )
+        
+        # Prepare context for the graph
+        context = request.context or {}
+        
+        # Add persona information if provided
+        if request.persona:
+            context["requested_persona"] = request.persona
+        
+        # Process query through LangGraph system
+        print(f"Processing query: {request.query}")
+        result = await graph_system.process_query(request.query, context)
+        
+        if result.get("success"):
+            # Extract the formatted response from the graph result
+            formatted_response = result.get("response", {})
+            metadata = result.get("metadata", {})
+            
+            # Add processing metadata
+            metadata.update({
+                "processing_time": time.time() - start_time,
+                "system_mode": "langgraph",
+                "graph_flow": "persona_selector → router → processor → suggestion_generator → answer_formatter"
+            })
+            
+            # Create the final response
+            final_response = QueryResponse(
+                formatted_response=formatted_response,
+                metadata=metadata,
+                status="success"
+            )
+            
+            # Print the response before sending to frontend
+            print("\n" + "="*80)
+            print("🚀 BACKEND RESPONSE BEING SENT TO FRONTEND")
+            print("="*80)
+            print(f"📝 Query: {request.query}")
+            print(f"👤 Persona: {request.persona}")
+            print(f"⏱️  Processing Time: {metadata['processing_time']:.3f}s")
+            print(f"🎯 Status: {final_response.status}")
+            print(f"🔄 Route Selected: {metadata.get('route_selected', 'Unknown')}")
+            print(f"📊 Route Confidence: {metadata.get('route_confidence', 0):.2f}")
+            print(f"🤖 Persona Selected: {metadata.get('persona_selected', 'Unknown')}")
+            print(f"📄 Response Type: {formatted_response.get('type', 'Unknown')}")
+            
+            # Print sections if available
+            if 'sections' in formatted_response:
+                print(f"📋 Sections Found: {len(formatted_response['sections'])}")
+                for i, section in enumerate(formatted_response['sections']):
+                    print(f"   {i+1}. {section.get('title', 'No title')} ({section.get('type', 'No type')})")
+            
+            # Print suggestions if available
+            suggestions_section = next((s for s in formatted_response.get('sections', []) if s.get('type') == 'suggestions'), None)
+            if suggestions_section and 'suggestions' in suggestions_section:
+                print(f"💡 Suggestions: {len(suggestions_section['suggestions'])} found")
+                for i, suggestion in enumerate(suggestions_section['suggestions'][:3]):  # Show first 3
+                    print(f"   {i+1}. {suggestion.get('title', 'No title')}")
+            
+            # Print references if available
+            references_section = next((s for s in formatted_response.get('sections', []) if s.get('type') == 'references'), None)
+            if references_section and 'references' in references_section:
+                print(f"📚 References: {len(references_section['references'])} found")
+                for i, ref in enumerate(references_section['references'][:3]):  # Show first 3
+                    print(f"   {i+1}. Score: {ref.get('relevance_score', 'N/A'):.3f}")
+            
+            print("="*80)
+            print("📤 SENDING RESPONSE TO FRONTEND")
+            print("="*80 + "\n")
+            
+            # Final print before sending
+            print(f"🎯 FINAL RESPONSE : {final_response}")
+            
+            return final_response
+        else:
+            # Handle graph processing errors
+            error_msg = result.get("error", "Unknown error in LangGraph processing")
+            logger.error(f"LangGraph processing failed: {error_msg}")
+            
+            error_response = QueryResponse(
+                formatted_response={"error": error_msg},
+                metadata={
+                    "system_mode": "langgraph_error",
+                    "error": error_msg,
+                    "processing_time": time.time() - start_time
+                },
+                status="error"
+            )
+            
+            # Print error response
+            print("\n" + "="*80)
+            print("❌ BACKEND ERROR RESPONSE")
+            print("="*80)
+            print(f"📝 Query: {request.query}")
+            print(f"👤 Persona: {request.persona}")
+            print(f"⏱️  Processing Time: {error_response.metadata['processing_time']:.3f}s")
+            print(f"🎯 Status: {error_response.status}")
+            print(f"🚨 Error: {error_msg}")
+            print("="*80)
+            print("📤 SENDING ERROR RESPONSE TO FRONTEND")
+            print("="*80 + "\n")
+            
+            # Final print before sending
+            print(f"🎯 FINAL RESPONSE : {error_response}")
+            
+            return error_response
+            
     except Exception as e:
-        logger.error(f"Error in /query endpoint: {str(e)}")
-        return QueryResponse(
-            formatted_response={"error": f"/query endpoint failed: {str(e)}"},
-            metadata={},
+        logger.error(f"Error in query processing: {str(e)}")
+        exception_response = QueryResponse(
+            formatted_response={"error": f"Query processing failed: {str(e)}"},
+            metadata={
+                "system_mode": "error",
+                "error": str(e),
+                "processing_time": time.time() - start_time
+            },
             status="error"
         )
+        
+        # Print exception response
+        print("\n" + "="*80)
+        print("💥 BACKEND EXCEPTION RESPONSE")
+        print("="*80)
+        print(f"📝 Query: {request.query}")
+        print(f"👤 Persona: {request.persona}")
+        print(f"⏱️  Processing Time: {exception_response.metadata['processing_time']:.3f}s")
+        print(f"🎯 Status: {exception_response.status}")
+        print(f"💥 Exception: {str(e)}")
+        print("="*80)
+        print("📤 SENDING EXCEPTION RESPONSE TO FRONTEND")
+        print("="*80 + "\n")
+            
+            # Final print before sending
+        print(f"🎯 FINAL RESPONSE : {exception_response}")
+            
+        return exception_response
+
 
 async def save_uploaded_file(file: UploadFile) -> tuple[str, bytes, str]:
     """Save uploaded file and return (safe_filename, file_bytes, file_path)."""

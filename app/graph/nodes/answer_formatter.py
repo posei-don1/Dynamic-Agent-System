@@ -17,6 +17,7 @@ class AnswerFormatter:
             'data_summary': self._format_data_summary,
             'calculation': self._format_calculation,
             'document_analysis': self._format_document_analysis,
+            'combined_response': self._format_combined_response,
             'suggestion': self._format_suggestion,
             'error': self._format_error,
             'general': self._format_general
@@ -25,7 +26,7 @@ class AnswerFormatter:
     def format_response(self, response_data: Dict[str, Any], format_type: str = 'general', 
                        persona: str = None, query: str = None) -> Dict[str, Any]:
         """
-        Format response data for user presentation
+        Format response data for user presentation with persona-specific enhancements
         
         Args:
             response_data: Raw response data to format
@@ -36,7 +37,7 @@ class AnswerFormatter:
         Returns:
             Formatted response
         """
-        logger.info(f"Formatting response: {format_type}")
+        logger.info(f"Formatting response: {format_type} with persona: {persona}")
         
         try:
             # Get appropriate formatter
@@ -56,7 +57,24 @@ class AnswerFormatter:
             
             # Add persona context if available
             if persona:
-                formatted_response['persona_context'] = self._add_persona_context(persona, formatted_response)
+                persona_context = self._add_persona_context(persona, formatted_response)
+                formatted_response['persona_context'] = persona_context
+                
+                # Add persona-specific introduction to the response
+                if 'sections' in formatted_response and formatted_response['sections']:
+                    # Add persona introduction as the first section
+                    persona_intro = {
+                        'title': f'Analysis by {persona.replace("_", " ").title()}',
+                        'content': persona_context['signature'],
+                        'type': 'persona_introduction',
+                        'expertise': persona_context['expertise'],
+                        'approach': persona_context['approach']
+                    }
+                    formatted_response['sections'].insert(0, persona_intro)
+                
+                # Update the title to reflect the persona
+                if 'title' in formatted_response:
+                    formatted_response['title'] = f"{formatted_response['title']} - {persona.replace('_', ' ').title()} Perspective"
             
             return formatted_response
             
@@ -66,62 +84,80 @@ class AnswerFormatter:
     
     def _format_data_summary(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format data analysis results"""
-        if 'error' in data:
-            return self._format_error(data)
+        # Handle nested structure from graph builder
+        if 'processed_data' in data:
+            actual_data = data['processed_data']
+        else:
+            actual_data = data
+            
+        logger.info(f"Formatting data summary with actual_data: {actual_data}")
+            
+        if 'error' in actual_data:
+            return self._format_error(actual_data)
+            
         formatted = {
             'type': 'data_summary',
             'title': 'Data Analysis Results',
             'sections': []
         }
         # Dataset overview
-        if 'shape' in data:
+        if 'shape' in actual_data:
             overview = {
                 'title': 'Dataset Overview',
-                'content': f"Dataset contains {data['shape'][0]} rows and {data['shape'][1]} columns",
+                'content': f"Dataset contains {actual_data['shape'][0]} rows and {actual_data['shape'][1]} columns",
                 'details': {
-                    'rows': data['shape'][0],
-                    'columns': data['shape'][1],
-                    'column_names': data.get('columns', [])
+                    'rows': actual_data['shape'][0],
+                    'columns': actual_data['shape'][1],
+                    'column_names': actual_data.get('columns', [])
                 }
             }
             formatted['sections'].append(overview)
         # Query results
-        if 'result' in data:
-            result = data['result']
+        if 'result' in actual_data:
+            result = actual_data['result']
             # Handle 'values' type (list of values for a column)
             if isinstance(result, dict) and result.get('type') == 'values':
                 values_section = {
-                    'title': f"Values for column '{data.get('used_column', result.get('column', ''))}",
+                    'title': f"Values for column '{actual_data.get('used_column', result.get('column', ''))}",
                     'content': result.get('description', 'List of values'),
                     'values': result.get('result', []),
-                    'column': data.get('used_column', result.get('column', '')),
+                    'column': actual_data.get('used_column', result.get('column', '')),
                     'type': 'values',
-                    'source_file': data.get('used_file', '')
+                    'source_file': actual_data.get('used_file', '')
                 }
                 formatted['sections'].append(values_section)
             # Fallback for generic column data
             elif isinstance(result, dict) and result.get('type') == 'column_data':
                 col_section = {
-                    'title': f"Data for column '{data.get('used_column', result.get('column', ''))}",
+                    'title': f"Data for column '{actual_data.get('used_column', result.get('column', ''))}",
                     'content': result.get('description', 'Column data'),
                     'values': result.get('result', []),
-                    'column': data.get('used_column', result.get('column', '')),
+                    'column': actual_data.get('used_column', result.get('column', '')),
                     'type': 'column_data',
-                    'source_file': data.get('used_file', '')
+                    'source_file': actual_data.get('used_file', '')
                 }
                 formatted['sections'].append(col_section)
             # Handle math/stat results
             elif isinstance(result, dict):
+                # Check if it has formatted_result for better display
+                if 'formatted_result' in result:
+                    content = result['formatted_result']
+                else:
+                    content = result.get('description', 'Analysis completed')
+                
                 result_section = {
                     'title': 'Query Results',
-                    'content': result.get('description', 'Analysis completed'),
+                    'content': content,
                     'data': result.get('result'),
-                    'type': result.get('type', 'general')
+                    'type': result.get('type', 'general'),
+                    'raw_result': result.get('result'),
+                    'formatted_result': result.get('formatted_result', ''),
+                    'description': result.get('description', '')
                 }
                 formatted['sections'].append(result_section)
         # Financial analysis
-        if 'analysis' in data:
-            analysis = data['analysis']
+        if 'analysis' in actual_data:
+            analysis = actual_data['analysis']
             for key, value in analysis.items():
                 section = {
                     'title': f'{key.title()} Analysis',
@@ -129,6 +165,19 @@ class AnswerFormatter:
                     'data': value
                 }
                 formatted['sections'].append(section)
+        
+        # Add suggestions if available from graph builder
+        if 'suggestions' in data and data['suggestions']:
+            suggestions_data = data['suggestions']
+            if suggestions_data.get('suggestions'):
+                suggestions_section = {
+                    'title': 'Suggestions',
+                    'content': f"Generated {len(suggestions_data['suggestions'])} follow-up questions",
+                    'suggestions': suggestions_data['suggestions'],
+                    'type': 'suggestions'
+                }
+                formatted['sections'].append(suggestions_section)
+        
         return formatted
     
     def _format_calculation(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -184,8 +233,40 @@ class AnswerFormatter:
             'sections': []
         }
         
+        # Main answer from RAG processing - THIS IS THE KEY PART!
+        if 'answer' in data:
+            answer_section = {
+                'title': 'Answer',
+                'content': data['answer'],
+                'type': 'answer'
+            }
+            formatted['sections'].append(answer_section)
+        
         # Document info
-        if 'file_path' in data:
+        if 'document_used' in data:
+            doc_info = {
+                'title': 'Document Information',
+                'content': f"Analyzed document: {data['document_used']}",
+                'details': {
+                    'document_used': data['document_used'],
+                    'relevant_chunks_found': data.get('relevant_chunks_found', 0),
+                    'query': data.get('query', '')
+                }
+            }
+            formatted['sections'].append(doc_info)
+        
+        # References from RAG
+        if 'references' in data and data['references']:
+            references_section = {
+                'title': 'References',
+                'content': f"Found {len(data['references'])} relevant document sections",
+                'references': data['references'],
+                'type': 'references'
+            }
+            formatted['sections'].append(references_section)
+        
+        # Legacy support for other document analysis types
+        if 'file_path' in data and 'document_used' not in data:
             doc_info = {
                 'title': 'Document Information',
                 'content': f"Analyzed document: {data['file_path']}",
@@ -225,6 +306,77 @@ class AnswerFormatter:
                     'data': value
                 }
                 formatted['sections'].append(section)
+        
+        return formatted
+    
+    def _format_combined_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format responses that include both actual answer and suggestions"""
+        if 'error' in data:
+            return self._format_error(data)
+        
+        formatted = {
+            'type': 'combined_response',
+            'title': 'Analysis Results with Recommendations',
+            'sections': []
+        }
+        
+        # Extract processed data and suggestions
+        processed_data = data.get("processed_data", {})
+        suggestions = data.get("suggestions", {})
+        
+        # Add the actual answer first (most important)
+        if processed_data.get("answer"):
+            answer_section = {
+                'title': 'Answer',
+                'content': processed_data['answer'],
+                'type': 'answer'
+            }
+            formatted['sections'].append(answer_section)
+        
+        # Add document information
+        if processed_data.get("document_used"):
+            doc_info = {
+                'title': 'Document Information',
+                'content': f"Analyzed document: {processed_data['document_used']}",
+                'details': {
+                    'document_used': processed_data['document_used'],
+                    'relevant_chunks_found': processed_data.get('relevant_chunks_found', 0),
+                    'query': processed_data.get('query', '')
+                }
+            }
+            formatted['sections'].append(doc_info)
+        
+        # Add references from RAG
+        if processed_data.get("references") and processed_data["references"]:
+            references_section = {
+                'title': 'References',
+                'content': f"Found {len(processed_data['references'])} relevant document sections",
+                'references': processed_data['references'],
+                'type': 'references'
+            }
+            formatted['sections'].append(references_section)
+        
+        # Add suggestions
+        if suggestions.get("suggestions"):
+            suggestions_section = {
+                'title': 'Recommendations',
+                'content': 'Based on the analysis, here are additional recommendations:',
+                'suggestions': suggestions['suggestions'],
+                'type': 'suggestions'
+            }
+            formatted['sections'].append(suggestions_section)
+        
+        # Add action plan if available
+        if suggestions.get("action_plan"):
+            action_plan = suggestions['action_plan']
+            if action_plan.get("short_term_goals"):
+                action_section = {
+                    'title': 'Action Plan',
+                    'content': 'Recommended next steps:',
+                    'actions': action_plan['short_term_goals'],
+                    'type': 'action_plan'
+                }
+                formatted['sections'].append(action_section)
         
         return formatted
     
@@ -350,28 +502,44 @@ class AnswerFormatter:
     def _add_persona_context(self, persona: str, formatted_response: Dict[str, Any]) -> Dict[str, Any]:
         """Add persona-specific context to response"""
         persona_contexts = {
+            'general': {
+                'perspective': 'General Analysis Perspective',
+                'focus': 'This analysis provides a comprehensive view of the topic.',
+                'expertise': 'General assistant with broad knowledge and analytical capabilities',
+                'approach': 'I provide a balanced analysis considering multiple perspectives and general knowledge.',
+                'signature': 'From a general perspective, I provide comprehensive analysis of the available information.'
+            },
             'financial_analyst': {
                 'perspective': 'Financial Analysis Perspective',
-                'focus': 'This analysis focuses on financial metrics, trends, and investment implications.'
+                'focus': 'This analysis focuses on financial metrics, trends, and investment implications.',
+                'expertise': 'Expert in financial analysis, market trends, and investment strategies',
+                'approach': 'I analyze data from a financial perspective, considering market implications, risk factors, and investment opportunities.',
+                'signature': 'From a financial analyst perspective, I focus on the monetary and market implications of this data.'
             },
             'legal_advisor': {
                 'perspective': 'Legal Analysis Perspective',
-                'focus': 'This analysis examines legal implications, compliance, and contractual aspects.'
+                'focus': 'This analysis examines legal implications, compliance, and contractual aspects.',
+                'expertise': 'Legal expert specializing in contracts, compliance, and regulations',
+                'approach': 'I examine information through a legal lens, identifying compliance issues, contractual implications, and regulatory considerations.',
+                'signature': 'From a legal advisor perspective, I focus on compliance, contractual obligations, and regulatory implications.'
             },
             'data_scientist': {
                 'perspective': 'Data Science Perspective',
-                'focus': 'This analysis applies statistical methods and data modeling techniques.'
+                'focus': 'This analysis applies statistical methods and data modeling techniques.',
+                'expertise': 'Expert in data analysis, machine learning, and statistical modeling',
+                'approach': 'I apply statistical rigor and data science methodologies to extract meaningful insights and patterns.',
+                'signature': 'From a data scientist perspective, I focus on statistical significance, data quality, and predictive insights.'
             },
             'business_consultant': {
                 'perspective': 'Business Strategy Perspective',
-                'focus': 'This analysis considers business impact, operational efficiency, and strategic implications.'
+                'focus': 'This analysis considers business impact, operational efficiency, and strategic implications.',
+                'expertise': 'Business strategy and operations expert',
+                'approach': 'I evaluate information from a strategic business perspective, considering operational impact, market positioning, and growth opportunities.',
+                'signature': 'From a business consultant perspective, I focus on strategic implications, operational efficiency, and business value.'
             }
         }
         
-        return persona_contexts.get(persona, {
-            'perspective': 'General Analysis Perspective',
-            'focus': 'This analysis provides a comprehensive view of the topic.'
-        })
+        return persona_contexts.get(persona, persona_contexts['general'])
     
     def create_summary_report(self, responses: List[Dict[str, Any]], title: str = "Analysis Report") -> Dict[str, Any]:
         """Create a comprehensive summary report from multiple responses"""
