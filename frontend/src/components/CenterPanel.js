@@ -7,25 +7,18 @@ import {
   RobotOutlined,
   UserOutlined,
   ClearOutlined,
-  CopyOutlined
+  CopyOutlined,
+  FileTextOutlined
 } from '@ant-design/icons';
 
-const CenterPanel = () => {
+const CenterPanel = ({ onMetadataUpdate }) => {
   const [inputValue, setInputValue] = useState('');
   const [chatHistory, setChatHistory] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  const suggestedQueries = [
-    "Analyze Microsoft's revenue trends from the uploaded data",
-    "Review the contract terms for potential risks",
-    "Calculate the year-over-year growth rate",
-    "Summarize key financial metrics",
-    "What are the main legal considerations?",
-    "Perform statistical analysis on the dataset"
-  ];
-
+ 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, isProcessing]);
@@ -69,14 +62,101 @@ const CenterPanel = () => {
         return;
       }
       const data = await response.json();
+      console.log(data)
+      
+      // Parse the formatted response
+      const formattedResponse = data.formatted_response || {};
+      const sections = formattedResponse.sections || [];
+      
+      // Debug: Log the sections to see the structure
+      console.log('Sections:', sections);
+      
+      // Extract main answer and suggestions
+      const answer = sections.find(section => section.type === 'answer')?.content || '';
+      const suggestions = sections.find(section => section.type === 'suggestions')?.suggestions || [];
+      
+      // Look for structured data results in different possible sections
+      let structuredResult = '';
+      
+      // First, try to find "Query Results" section
+      const queryResults = sections.find(section => section.title === 'Query Results');
+      if (queryResults) {
+        structuredResult = queryResults.formatted_result || queryResults.content || '';
+      }
+      
+      // If not found, look for "Processed Data" section (which contains the actual result)
+      if (!structuredResult) {
+        const processedData = sections.find(section => section.title === 'Processed Data');
+        if (processedData && processedData.data && processedData.data.result) {
+          const result = processedData.data.result;
+          if (result.formatted_result) {
+            structuredResult = result.formatted_result;
+          } else if (result.description) {
+            structuredResult = result.description;
+          }
+        }
+      }
+      
+      // Also check for any section with formatted_result
+      if (!structuredResult) {
+        for (const section of sections) {
+          if (section.data && section.data.result && section.data.result.formatted_result) {
+            structuredResult = section.data.result.formatted_result;
+            break;
+          }
+        }
+      }
+      
+      // Debug: Log the extracted structured result
+      console.log('Extracted structured result:', structuredResult);
+      
+      // Update metadata in parent component (includes all detailed info)
+      if (onMetadataUpdate) {
+        onMetadataUpdate({
+          ...data.metadata,
+          sections: sections,
+          formattedResponse: formattedResponse,
+          success: data.status === 'success'
+        });
+      }
+      
+      // Show the actual result or success/failure message
+      let displayMessage = '';
+      if (data.status === 'success') {
+        if (structuredResult) {
+          // Format the result in a clean way
+          const processedData = sections.find(section => section.title === 'Processed Data');
+          if (processedData && processedData.data && processedData.data.result) {
+            const result = processedData.data.result;
+            const column = processedData.data.used_column;
+            const operation = result.type;
+            const value = result.result;
+            
+            // Format: "mean value of agricultural land is 159488060.27030674"
+            displayMessage = `${operation} value of ${column} is ${value}`;
+          } else {
+            displayMessage = structuredResult;
+          }
+        } else if (answer) {
+          displayMessage = answer;
+        } else if (formattedResponse.title) {
+          displayMessage = formattedResponse.title;
+        } else {
+          displayMessage = 'Query processed successfully';
+        }
+      } else {
+        displayMessage = 'Query failed. Please try again.';
+      }
+      
       setChatHistory(prev => [
         ...prev,
         {
           type: 'bot',
-          message: data.formatted_response?.response || data.response || JSON.stringify(data),
-          suggestions: data.formatted_response?.suggestions || [],
+          message: displayMessage,
+          suggestions: suggestions,
           timestamp: new Date(),
-          metadata: data.metadata
+          success: data.status === 'success',
+          rawData: data // Store the full response data for debugging
         }
       ]);
     } catch (error) {
@@ -175,35 +255,48 @@ const CenterPanel = () => {
                 </div>
 
                 {/* Message */}
-                <div className={`neo-card-flat ${chat.type === 'user' ? 'bg-dark-tertiary' : 'bg-dark-secondary'}`}>
+                <div className={`neo-card-flat ${chat.type === 'user' ? 'bg-dark-tertiary' : chat.success ? 'bg-dark-secondary' : 'bg-red-900/20'}`}>
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      {chat.type === 'bot' && chat.message && chat.message.startsWith('<div>') ? (
-                        // Render HTML from backend (safe because backend controls formatting)
-                        <div
-                          dangerouslySetInnerHTML={{
-                            __html: chat.message.replaceAll(
-                              /<pre[^>]*>([\s\S]*?)<\/pre>/g,
-                              (match, code) => `<pre class='chat-code-block'>${code}</pre>`
-                            )
-                          }}
-                        />
-                      ) : (
-                        <p className="text-sm leading-relaxed">{chat.message}</p>
+                      {/* Main Message */}
+                      {chat.type === 'bot' && chat.message && (
+                        <div>
+                          <p className="text-sm leading-relaxed">{chat.message}</p>
+                          {/* Additional context for structured data (optional) */}
+                          {chat.rawData && chat.rawData.formatted_response && (
+                            <div className="mt-2 text-xs text-dark-textSecondary">
+                              {chat.rawData.formatted_response.sections?.map((section, idx) => {
+                                // Only show file info for context
+                                if (section.title === 'Processed Data' && section.data && section.data.used_file) {
+                                  return (
+                                    <div key={idx} className="text-[10px] opacity-70">
+                                      Source: {section.data.used_file}
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })}
+                            </div>
+                          )}
+                        </div>
                       )}
                       
-                      {/* Suggestions */}
-                      {chat.suggestions && chat.suggestions.length > 0 && (
-                        <div className="mt-2 space-y-1">
+                      {/* Suggested Questions */}
+                      {chat.type === 'bot' && chat.suggestions && chat.suggestions.length > 0 && (
+                        <div className="mt-3 space-y-2">
                           <div className="flex items-center text-[11px] text-dark-textSecondary font-semibold">
                             <BulbOutlined className="mr-1 text-[12px]" />
-                            Suggestions:
+                            Suggested Questions:
                           </div>
-                          <div className="flex flex-wrap gap-1">
-                            {chat.suggestions.map((suggestion, i) => (
-                              <span key={i} className="neo-panel-inset px-2 py-1 text-[11px] rounded bg-dark-tertiary/60 text-dark-textSecondary">
-                                {suggestion}
-                              </span>
+                          <div className="space-y-1">
+                            {chat.suggestions.slice(0, 3).map((suggestion, i) => (
+                              <button
+                                key={i}
+                                onClick={() => handleSuggestedQuery(suggestion.title)}
+                                className="block w-full text-left neo-panel-inset p-2 rounded text-[11px] text-dark-textSecondary hover:text-dark-text hover:bg-dark-tertiary/50 transition-colors"
+                              >
+                                {suggestion.title}
+                              </button>
                             ))}
                           </div>
                         </div>
