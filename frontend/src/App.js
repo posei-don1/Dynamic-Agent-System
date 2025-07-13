@@ -10,6 +10,7 @@ function App() {
   const [queryResult, setQueryResult] = useState(null);
   const [processingFlow, setProcessingFlow] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [chatMetadata, setChatMetadata] = useState(null);
 
   const handleFileUpload = async (files) => {
     // files should be an array of File objects from the input event
@@ -87,6 +88,7 @@ function App() {
 
       const result = await response.json();
       setQueryResult(result);
+      setChatMetadata(result.metadata || null);
     } catch (error) {
       console.error('Query failed:', error);
       setQueryResult({
@@ -124,6 +126,7 @@ function App() {
           queryResult={queryResult}
           isProcessing={isProcessing}
           onQuerySubmit={handleQuerySubmit}
+          onMetadataUpdate={setChatMetadata}
         />
       </div>
 
@@ -133,6 +136,7 @@ function App() {
           queryResult={queryResult}
           processingFlow={processingFlow}
           uploadedFiles={uploadedFiles}
+          chatMetadata={chatMetadata}
         />
       </div>
     </div>

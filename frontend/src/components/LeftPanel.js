@@ -78,6 +78,7 @@ const LeftPanel = ({ selectedPersona, onPersonaChange, uploadedFiles, onFileUplo
             <DatabaseOutlined className="mr-2" />
             Sources
           </button>
+
         </div>
       </div>
 

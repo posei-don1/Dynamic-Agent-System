@@ -15,7 +15,7 @@ import {
   BarChartOutlined
 } from '@ant-design/icons';
 
-const RightPanel = ({ queryResult, processingFlow, uploadedFiles }) => {
+const RightPanel = ({ queryResult, processingFlow, uploadedFiles, chatMetadata }) => {
   const [activeTab, setActiveTab] = useState('metadata');
   const [selectedFile, setSelectedFile] = useState(null);
 
@@ -100,223 +100,258 @@ const RightPanel = ({ queryResult, processingFlow, uploadedFiles }) => {
       {/* Content Area */}
       <div className="flex-1 overflow-hidden">
         {activeTab === 'metadata' && (
-          <div className="neo-panel p-4 h-full">
+          <div className="neo-panel p-4 h-full overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">Query Metadata</h3>
             
-            {queryResult ? (
+            {chatMetadata ? (
               <div className="space-y-4">
-                {/* System Status */}
+                {/* Processing Details */}
                 <div className="neo-panel-inset p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-dark-textSecondary">System Mode</span>
-                    <div className={`px-2 py-1 rounded-full text-xs ${
-                      queryResult.metadata?.system_mode === 'actual_graph' 
-                        ? 'bg-dark-success bg-opacity-20 text-dark-success' 
-                        : 'bg-dark-warning bg-opacity-20 text-dark-warning'
-                    }`}>
-                      {queryResult.metadata?.system_mode === 'actual_graph' ? 'Live' : 'Mock'}
+                  <h4 className="text-sm font-semibold mb-2 text-dark-textSecondary">Processing Details</h4>
+                  <div className="space-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Status:</span>
+                      <span className={`${chatMetadata.success ? 'text-green-400' : 'text-red-400'}`}>
+                        {chatMetadata.success ? 'Success' : 'Failed'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Persona:</span>
+                      <span className="text-dark-text capitalize">{chatMetadata.persona_selected?.replace('_', ' ') || 'Unknown'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Route:</span>
+                      <span className="text-dark-text">{chatMetadata.route_selected || 'Unknown'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Confidence:</span>
+                      <span className="text-dark-text">{(chatMetadata.route_confidence * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Time:</span>
+                      <span className="text-dark-text">{chatMetadata.processing_time?.toFixed(2)}s</span>
                     </div>
                   </div>
                 </div>
 
-                {/* Persona Info */}
+                {/* System Mode */}
                 <div className="neo-panel-inset p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-dark-textSecondary">Selected Persona</span>
-                    <UserOutlined className="text-dark-info" />
-                  </div>
-                  <p className="text-sm capitalize">
-                    {queryResult.metadata?.persona_selected?.replace('_', ' ') || 'Unknown'}
-                  </p>
-                </div>
-
-                {/* Route Info */}
-                <div className="neo-panel-inset p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-dark-textSecondary">Processing Route</span>
-                    <BranchesOutlined className="text-dark-info" />
-                  </div>
-                  <p className="text-sm">{queryResult.metadata?.route_selected || 'Unknown'}</p>
-                  <div className="flex items-center mt-2">
-                    <span className="text-xs text-dark-textSecondary mr-2">Confidence:</span>
-                    <div className="flex-1 bg-dark-primary rounded-full h-2">
-                      <div
-                        className="bg-dark-success h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${(queryResult.metadata?.route_confidence || 0) * 100}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-dark-textSecondary ml-2">
-                      {Math.round((queryResult.metadata?.route_confidence || 0) * 100)}%
-                    </span>
+                  <h4 className="text-sm font-semibold mb-2 text-dark-textSecondary">System Mode</h4>
+                  <div className="text-xs text-dark-textSecondary">
+                    {chatMetadata.system_mode || 'Unknown'}
                   </div>
                 </div>
 
-                {/* Performance */}
-                <div className="neo-panel-inset p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-dark-textSecondary">Performance</span>
-                    <ClockCircleOutlined className="text-dark-info" />
+                {/* Document Information */}
+                {chatMetadata.sections && (
+                  <div className="neo-panel-inset p-3">
+                    <h4 className="text-sm font-semibold mb-2 text-dark-textSecondary">Document Information</h4>
+                    {(() => {
+                      const docInfo = chatMetadata.sections.find(section => section.title === 'Document Information');
+                      if (docInfo) {
+                        return (
+                          <div className="space-y-1 text-xs">
+                            <div className="flex justify-between">
+                              <span className="text-dark-textSecondary">Document:</span>
+                              <span className="text-dark-text">{docInfo.details?.document_used || 'Unknown'}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-dark-textSecondary">Chunks Found:</span>
+                              <span className="text-dark-text">{docInfo.details?.relevant_chunks_found || 0}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-dark-textSecondary">Query:</span>
+                              <span className="text-dark-text truncate max-w-32">{docInfo.details?.query || 'N/A'}</span>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return <div className="text-xs text-dark-textSecondary">No document information</div>;
+                    })()}
                   </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span>Processing Time:</span>
-                      <span>{queryResult.metadata?.processing_time?.toFixed(2)}s</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span>Timestamp:</span>
-                      <span>{new Date(queryResult.metadata?.timestamp * 1000).toLocaleTimeString()}</span>
-                    </div>
-                  </div>
-                </div>
+                )}
 
-                {/* Response Stats */}
-                <div className="neo-panel-inset p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-dark-textSecondary">Response Stats</span>
-                    <BarChartOutlined className="text-dark-info" />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span>Response Length:</span>
-                      <span>{queryResult.formatted_response?.response?.length || 0} chars</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span>Suggestions:</span>
-                      <span>{queryResult.formatted_response?.suggestions?.length || 0}</span>
-                    </div>
-                  </div>
-                </div>
+                {/* Action Plan */}
+                {chatMetadata.sections && (() => {
+                  const actionPlan = chatMetadata.sections.find(section => section.type === 'action_plan')?.actions;
+                  if (actionPlan && actionPlan.length > 0) {
+                    return (
+                      <div className="neo-panel-inset p-3">
+                        <h4 className="text-sm font-semibold mb-2 text-dark-textSecondary">Action Plan</h4>
+                        <div className="space-y-1">
+                          {actionPlan.map((action, i) => (
+                            <div key={i} className="text-xs text-dark-textSecondary">
+                              • {action}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             ) : (
               <div className="text-center text-dark-textSecondary py-12">
                 <InfoCircleOutlined className="text-4xl mb-4" />
-                <p className="text-lg">No query processed yet</p>
-                <p className="text-sm">Submit a query to see metadata</p>
+                <p className="text-lg">No metadata available</p>
+                <p className="text-sm">Send a query to see system information</p>
               </div>
             )}
           </div>
         )}
 
         {activeTab === 'flow' && (
-          <div className="neo-panel p-4 h-full">
-            <h3 className="text-lg font-semibold mb-4">Processing Flow</h3>
+          <div className="neo-panel p-4 h-full overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">System Flow</h3>
             
-            {processingFlow.length > 0 ? (
-              <div className="space-y-3">
-                {processingFlow.map((step, index) => {
-                  const StepIcon = getStepIcon(step.step);
-                  return (
-                    <div key={index} className="neo-panel-inset p-3 animate-slide-down">
-                      <div className="flex items-center">
-                        <div className={`p-2 rounded-full mr-3 ${
-                          step.status === 'completed' 
-                            ? 'bg-dark-success bg-opacity-20' 
-                            : 'bg-dark-warning bg-opacity-20'
-                        }`}>
-                          {step.status === 'completed' ? (
-                            <CheckCircleOutlined className="text-dark-success" />
-                          ) : (
-                            <LoadingOutlined className="text-dark-warning animate-spin" />
-                          )}
+            {chatMetadata?.graph_flow ? (
+              <div className="space-y-4">
+                {/* Graph Flow Visualization */}
+                <div className="neo-panel-inset p-4">
+                  <h4 className="text-sm font-semibold mb-3 text-dark-textSecondary">Graph Flow</h4>
+                  <div className="text-xs text-dark-textSecondary leading-relaxed">
+                    {chatMetadata.graph_flow}
+                  </div>
+                </div>
+
+                {/* Flow Steps */}
+                <div className="neo-panel-inset p-4">
+                  <h4 className="text-sm font-semibold mb-3 text-dark-textSecondary">Processing Steps</h4>
+                  <div className="space-y-2">
+                    {chatMetadata.graph_flow.split(' → ').map((step, index) => (
+                      <div key={index} className="flex items-center">
+                        <div className="p-1 rounded-full mr-2 bg-dark-success bg-opacity-20">
+                          <CheckCircleOutlined className="text-dark-success text-xs" />
                         </div>
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-semibold flex items-center">
-                              <StepIcon className="mr-2 text-dark-info" />
-                              {getStepLabel(step.step)}
-                            </span>
-                            <span className="text-xs text-dark-textSecondary">
-                              {step.timestamp.toLocaleTimeString()}
-                            </span>
-                          </div>
-                          <div className={`text-xs mt-1 ${
-                            step.status === 'completed' ? 'text-dark-success' : 'text-dark-warning'
-                          }`}>
-                            {step.status === 'completed' ? 'Completed' : 'Processing...'}
-                          </div>
-                        </div>
+                        <span className="text-xs text-dark-text capitalize">
+                          {step.replace('_', ' ')}
+                        </span>
+                        {index < chatMetadata.graph_flow.split(' → ').length - 1 && (
+                          <div className="mx-2 text-dark-textSecondary">→</div>
+                        )}
                       </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Flow Details */}
+                <div className="neo-panel-inset p-4">
+                  <h4 className="text-sm font-semibold mb-3 text-dark-textSecondary">Flow Details</h4>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Total Steps:</span>
+                      <span className="text-dark-text">{chatMetadata.graph_flow.split(' → ').length}</span>
                     </div>
-                  );
-                })}
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Processing Time:</span>
+                      <span className="text-dark-text">{chatMetadata.processing_time?.toFixed(2)}s</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-dark-textSecondary">Route Confidence:</span>
+                      <span className="text-dark-text">{(chatMetadata.route_confidence * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="text-center text-dark-textSecondary py-12">
                 <BranchesOutlined className="text-4xl mb-4" />
-                <p className="text-lg">No processing flow yet</p>
-                <p className="text-sm">Submit a query to see the processing steps</p>
+                <p className="text-lg">No flow information</p>
+                <p className="text-sm">Send a query to see the system flow</p>
               </div>
             )}
           </div>
         )}
 
         {activeTab === 'sources' && (
-          <div className="neo-panel p-4 h-full flex flex-col">
-            <h3 className="text-lg font-semibold mb-4">Source Files</h3>
+          <div className="neo-panel p-4 h-full overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">Sources & References</h3>
             
-            {uploadedFiles.length > 0 ? (
-              <div className="flex-1 overflow-y-auto space-y-3">
-                {uploadedFiles.map(file => (
-                  <div key={file.id} className="neo-panel-inset p-3">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start flex-1">
-                        <FileTextOutlined className="text-dark-info mr-3 mt-1" />
-                        <div className="flex-1">
-                          <h4 className="text-sm font-semibold truncate">{file.name}</h4>
-                          <p className="text-xs text-dark-textSecondary mt-1">
-                            {formatFileSize(file.size)} • {file.type}
-                          </p>
+            {chatMetadata?.sections ? (
+              <div className="space-y-4">
+                {/* Document Sources */}
+                {(() => {
+                  const docInfo = chatMetadata.sections.find(section => section.title === 'Document Information');
+                  if (docInfo) {
+                    return (
+                      <div className="neo-panel-inset p-4">
+                        <h4 className="text-sm font-semibold mb-3 text-dark-textSecondary">Document Source</h4>
+                        <div className="space-y-2 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-dark-textSecondary">File:</span>
+                            <span className="text-dark-text">{docInfo.details?.document_used || 'Unknown'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-dark-textSecondary">Chunks Found:</span>
+                            <span className="text-dark-text">{docInfo.details?.relevant_chunks_found || 0}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-dark-textSecondary">Query:</span>
+                            <span className="text-dark-text">{docInfo.details?.query || 'N/A'}</span>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => setSelectedFile(file)}
-                          className="neo-button-small p-2 text-dark-textSecondary hover:text-dark-text"
-                          title="Preview"
-                        >
-                          <EyeOutlined className="text-xs" />
-                        </button>
-                        <button
-                          className="neo-button-small p-2 text-dark-textSecondary hover:text-dark-text"
-                          title="Download"
-                        >
-                          <DownloadOutlined className="text-xs" />
-                        </button>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Pinecone References */}
+                {(() => {
+                  const references = chatMetadata.sections.find(section => section.type === 'references')?.references;
+                  if (references && references.length > 0) {
+                    return (
+                      <div className="neo-panel-inset p-4">
+                        <h4 className="text-sm font-semibold mb-3 text-dark-textSecondary">Pinecone References ({references.length})</h4>
+                        <div className="space-y-3 max-h-60 overflow-y-auto">
+                          {references.map((ref, i) => (
+                            <div key={i} className="border-l-2 border-dark-info pl-3">
+                              <div className="flex justify-between items-start mb-1">
+                                <div className="font-medium text-xs text-dark-text">
+                                  Source {i + 1}
+                                </div>
+                                <div className="text-xs text-dark-textSecondary">
+                                  Score: {ref.relevance_score?.toFixed(3) || 'N/A'}
+                                </div>
+                              </div>
+                              <div className="text-xs text-dark-textSecondary leading-relaxed">
+                                {ref.text_preview || 'No preview available'}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Uploaded Files */}
+                {uploadedFiles.length > 0 && (
+                  <div className="neo-panel-inset p-4">
+                    <h4 className="text-sm font-semibold mb-3 text-dark-textSecondary">Uploaded Files</h4>
+                    <div className="space-y-2">
+                      {uploadedFiles.map((file, index) => (
+                        <div key={index} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center">
+                            <FileTextOutlined className="text-dark-info mr-2" />
+                            <span className="text-dark-text">{file.name}</span>
+                          </div>
+                          <span className="text-dark-textSecondary">
+                            {formatFileSize(file.size)}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
+                )}
               </div>
             ) : (
               <div className="text-center text-dark-textSecondary py-12">
                 <FileTextOutlined className="text-4xl mb-4" />
-                <p className="text-lg">No source files</p>
-                <p className="text-sm">Upload files to see them here</p>
-              </div>
-            )}
-
-            {/* File Preview Modal */}
-            {selectedFile && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                <div className="neo-panel p-6 max-w-2xl max-h-96 overflow-y-auto">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold">File Preview</h3>
-                    <button
-                      onClick={() => setSelectedFile(null)}
-                      className="neo-button-small p-2 text-dark-textSecondary hover:text-dark-text"
-                    >
-                      ×
-                    </button>
-                  </div>
-                  <div className="neo-panel-inset p-4">
-                    <p className="text-sm text-dark-textSecondary">
-                      Preview for {selectedFile.name}
-                    </p>
-                    <p className="text-xs text-dark-textSecondary mt-2">
-                      File preview functionality would be implemented here
-                    </p>
-                  </div>
-                </div>
+                <p className="text-lg">No sources available</p>
+                <p className="text-sm">Send a query to see document sources and references</p>
               </div>
             )}
           </div>

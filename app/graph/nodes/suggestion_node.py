@@ -1,434 +1,233 @@
 """
 Suggestion Node
-Generates recommendations, advice, and actionable suggestions based on analysis
+Generates follow-up questions based on the answer content to help users continue the conversation
 """
 from typing import Dict, Any, List, Optional
 import logging
+import openai
 
 logger = logging.getLogger(__name__)
 
 class SuggestionNode:
-    """Generates suggestions and recommendations based on analysis results"""
+    """Generates follow-up questions based on answer content using OpenAI"""
     
     def __init__(self):
-        self.suggestion_templates = {
-            'financial': self._generate_financial_suggestions,
-            'business': self._generate_business_suggestions,
-            'data': self._generate_data_suggestions,
-            'document': self._generate_document_suggestions,
-            'general': self._generate_general_suggestions
-        }
-        
-        self.priority_levels = {
-            'high': {'weight': 3, 'label': 'High Priority'},
-            'medium': {'weight': 2, 'label': 'Medium Priority'},
-            'low': {'weight': 1, 'label': 'Low Priority'}
-        }
+        self.system_prompt = """You are an expert at generating follow-up questions that help users continue meaningful conversations.
+
+Your task is to analyze the given answer text and generate 2-4 follow-up questions that are:
+1. **Directly related** to the specific content and topics mentioned in the provided answer
+2. **Based on the actual text** - questions should reference specific concepts, examples, or details from the answer
+3. **Functional and actionable** - questions that lead to deeper understanding of the topics discussed
+4. **Varied in depth** - mix of basic understanding and advanced exploration
+5. **Natural conversation flow** - questions that feel like a natural continuation of the discussion
+
+CRITICAL REQUIREMENTS:
+- Generate questions ONLY from the content provided in the answer text
+- Do NOT generate generic questions that could apply to any topic
+- Do NOT ask about topics not mentioned in the answer
+- Focus on specific concepts, examples, functions, or scenarios mentioned in the answer
+- Make questions that would help someone dive deeper into the specific topics discussed
+
+Guidelines:
+- Look for specific terms, concepts, or examples mentioned in the answer
+- Generate questions about those specific elements
+- Ensure questions are specific enough to be meaningful
+- Avoid overly generic questions like "Tell me more" or "What else"
+- Make questions that would genuinely help someone learn more about the specific topics covered
+
+Format your response as a JSON array of question strings only, like:
+["Question 1?", "Question 2?", "Question 3?", "Question 4?"]
+
+Do not include any explanations, just the questions."""
     
-    def generate_suggestions(self, analysis_results: Dict[str, Any], 
-                           suggestion_type: str = 'general', 
+    def generate_suggestions(self, answer_content: str, 
                            context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        Generate suggestions based on analysis results
+        Generate follow-up questions based on the answer content using OpenAI
         
         Args:
-            analysis_results: Results from previous analysis
-            suggestion_type: Type of suggestions to generate
-            context: Additional context information
+            answer_content: The main answer text from doc_node, db_node, etc.
+            context: Additional context (query, persona, etc.)
             
         Returns:
-            Generated suggestions and recommendations
+            List of suggested follow-up questions
         """
-        logger.info(f"Generating suggestions: {suggestion_type}")
+        logger.info("Generating follow-up questions using OpenAI")
         
         try:
-            # Get appropriate suggestion generator
-            generator = self.suggestion_templates.get(suggestion_type, self._generate_general_suggestions)
+            # Get the original question from context
+            original_question = context.get("query", "") if context else ""
             
-            # Generate suggestions
-            suggestions = generator(analysis_results, context or {})
+            # Create the user prompt with both original question and answer content
+            user_prompt = f"""Based on this original question and answer, generate 2-4 follow-up questions:
+
+Original Question: "{original_question}"
+
+Answer: {answer_content}
+
+Generate follow-up questions that:
+1. Are directly related to BOTH the original question AND the answer content
+2. Help users dive deeper into the specific topics discussed
+3. Continue the conversation naturally from where it left off
+4. Reference specific concepts, examples, or details from the answer
+5. Would lead to meaningful responses when asked"""
+
+            # Use OpenAI to generate suggestions
+            response = openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=200,
+                temperature=0.7
+            )
             
-            # Prioritize suggestions
-            prioritized_suggestions = self._prioritize_suggestions(suggestions)
+            # Parse the response
+            suggestions = self._parse_llm_response(response.choices[0].message.content)
             
-            # Create action plan
-            action_plan = self._create_action_plan(prioritized_suggestions)
+            # Format suggestions for frontend
+            formatted_suggestions = []
+            for i, question in enumerate(suggestions):
+                formatted_suggestions.append({
+                    'id': i + 1,
+                    'title': question,
+                    'type': 'follow_up',
+                    'category': 'openai_generated',
+                    'context': {
+                        'original_question': original_question,
+                        'related_to_answer': True
+                    }
+                })
             
             return {
                 'success': True,
-                'suggestion_type': suggestion_type,
-                'suggestions': prioritized_suggestions,
-                'action_plan': action_plan,
-                'total_suggestions': len(prioritized_suggestions),
-                'context': context or {}
+                'suggestions': formatted_suggestions,
+                'total_suggestions': len(formatted_suggestions),
+                'method': 'openai_generated',
+                'context': {
+                    'original_question': original_question
+                }
             }
             
         except Exception as e:
-            logger.error(f"Error generating suggestions: {str(e)}")
-            return {'error': f'Suggestion generation failed: {str(e)}'}
-    
-    def _generate_financial_suggestions(self, results: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate financial-specific suggestions"""
-        suggestions = []
-        
-        # Check for financial analysis results
-        if 'analysis' in results:
-            analysis = results['analysis']
+            logger.error(f"Error generating suggestions with OpenAI: {str(e)}")
+            # Fallback to simple suggestions
+            fallback_suggestions = self.create_simple_suggestions(answer_content, context)
+            formatted_fallback = []
+            for i, question in enumerate(fallback_suggestions):
+                formatted_fallback.append({
+                    'id': i + 1,
+                    'title': question,
+                    'type': 'follow_up',
+                    'category': 'fallback',
+                    'context': {
+                        'original_question': context.get("query", "") if context else "",
+                        'related_to_answer': True
+                    }
+                })
             
-            # Revenue suggestions
-            if 'revenue' in analysis:
-                revenue_data = analysis['revenue']
-                
-                if revenue_data.get('total', 0) > 0:
-                    suggestions.append({
-                        'title': 'Revenue Optimization',
-                        'description': f'Current total revenue is ${revenue_data["total"]:,.2f}. Consider strategies to increase revenue streams.',
-                        'priority': 'high',
-                        'category': 'revenue',
-                        'actions': [
-                            'Analyze top-performing products/services',
-                            'Identify new market opportunities',
-                            'Optimize pricing strategy'
-                        ]
-                    })
-            
-            # Profit margin suggestions
-            if 'profit' in analysis:
-                profit_data = analysis['profit']
-                margin = profit_data.get('margin', 0)
-                
-                if margin < 0.15:  # Less than 15% margin
-                    suggestions.append({
-                        'title': 'Improve Profit Margins',
-                        'description': f'Current profit margin is {margin:.2%}. Consider cost reduction and efficiency improvements.',
-                        'priority': 'high',
-                        'category': 'profitability',
-                        'actions': [
-                            'Review operational costs',
-                            'Negotiate better supplier terms',
-                            'Improve operational efficiency'
-                        ]
-                    })
-                elif margin > 0.25:  # Good margin
-                    suggestions.append({
-                        'title': 'Leverage Strong Margins',
-                        'description': f'Strong profit margin of {margin:.2%}. Consider expansion opportunities.',
-                        'priority': 'medium',
-                        'category': 'growth',
-                        'actions': [
-                            'Invest in marketing and sales',
-                            'Explore new markets',
-                            'Increase production capacity'
-                        ]
-                    })
-            
-            # Growth suggestions
-            if 'growth' in analysis:
-                growth_data = analysis['growth']
-                
-                if growth_data.get('trend') == 'increasing':
-                    suggestions.append({
-                        'title': 'Sustain Growth Momentum',
-                        'description': 'Positive growth trend detected. Focus on maintaining and accelerating growth.',
-                        'priority': 'medium',
-                        'category': 'growth',
-                        'actions': [
-                            'Scale successful initiatives',
-                            'Invest in growth enablers',
-                            'Monitor key performance indicators'
-                        ]
-                    })
-        
-        # Default financial suggestions if no specific data
-        if not suggestions:
-            suggestions.extend([
-                {
-                    'title': 'Financial Health Check',
-                    'description': 'Conduct comprehensive financial analysis to identify opportunities.',
-                    'priority': 'medium',
-                    'category': 'analysis',
-                    'actions': [
-                        'Review financial statements',
-                        'Analyze cash flow patterns',
-                        'Benchmark against industry standards'
-                    ]
+            return {
+                'success': True,
+                'suggestions': formatted_fallback,
+                'total_suggestions': len(formatted_fallback),
+                'method': 'fallback',
+                'error': f'OpenAI generation failed, using fallback: {str(e)}',
+                'context': {
+                    'original_question': context.get("query", "") if context else ""
                 }
-            ])
-        
-        return suggestions
-    
-    def _generate_business_suggestions(self, results: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate business strategy suggestions"""
-        suggestions = []
-        
-        # Data-driven suggestions
-        if 'result' in results:
-            result = results['result']
-            
-            if isinstance(result, dict) and 'data' in result:
-                data = result['data']
-                
-                if isinstance(data, list) and len(data) > 0:
-                    suggestions.append({
-                        'title': 'Data-Driven Decision Making',
-                        'description': f'Dataset contains {len(data)} records. Leverage this data for strategic decisions.',
-                        'priority': 'high',
-                        'category': 'strategy',
-                        'actions': [
-                            'Identify key performance indicators',
-                            'Create data visualization dashboards',
-                            'Implement regular data reviews'
-                        ]
-                    })
-        
-        # Process optimization suggestions
-        suggestions.extend([
-            {
-                'title': 'Process Optimization',
-                'description': 'Streamline operations to improve efficiency and reduce costs.',
-                'priority': 'high',
-                'category': 'operations',
-                'actions': [
-                    'Map current business processes',
-                    'Identify bottlenecks and inefficiencies',
-                    'Implement automation where possible'
-                ]
-            },
-            {
-                'title': 'Technology Integration',
-                'description': 'Leverage technology to enhance business capabilities.',
-                'priority': 'medium',
-                'category': 'technology',
-                'actions': [
-                    'Assess current technology stack',
-                    'Identify digital transformation opportunities',
-                    'Implement scalable solutions'
-                ]
             }
-        ])
-        
-        return suggestions
     
-    def _generate_data_suggestions(self, results: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate data analysis suggestions"""
-        suggestions = []
-        
-        # Data quality suggestions
-        if 'null_counts' in results:
-            null_counts = results['null_counts']
-            high_null_cols = [col for col, count in null_counts.items() if count > 0]
-            
-            if high_null_cols:
-                suggestions.append({
-                    'title': 'Data Quality Improvement',
-                    'description': f'Found missing data in {len(high_null_cols)} columns. Address data quality issues.',
-                    'priority': 'high',
-                    'category': 'data_quality',
-                    'actions': [
-                        'Investigate sources of missing data',
-                        'Implement data validation rules',
-                        'Consider data imputation strategies'
-                    ]
-                })
-        
-        # Analysis suggestions
-        if 'columns' in results:
-            columns = results['columns']
-            
-            suggestions.append({
-                'title': 'Advanced Analytics',
-                'description': f'Dataset has {len(columns)} columns. Explore advanced analytical techniques.',
-                'priority': 'medium',
-                'category': 'analytics',
-                'actions': [
-                    'Perform correlation analysis',
-                    'Apply machine learning models',
-                    'Create predictive analytics'
-                ]
-            })
-        
-        # Visualization suggestions
-        suggestions.append({
-            'title': 'Data Visualization',
-            'description': 'Create visualizations to better understand data patterns.',
-            'priority': 'medium',
-            'category': 'visualization',
-            'actions': [
-                'Create interactive dashboards',
-                'Develop key metric visualizations',
-                'Implement real-time monitoring'
-            ]
-        })
-        
-        return suggestions
-    
-    def _generate_document_suggestions(self, results: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate document analysis suggestions"""
-        suggestions = []
-        
-        # Document processing suggestions
-        if 'chunks_count' in results:
-            chunks = results['chunks_count']
-            
-            if chunks > 10:
-                suggestions.append({
-                    'title': 'Document Structure Optimization',
-                    'description': f'Document contains {chunks} sections. Consider improving structure for better readability.',
-                    'priority': 'medium',
-                    'category': 'document_management',
-                    'actions': [
-                        'Create clear section headers',
-                        'Add executive summary',
-                        'Implement consistent formatting'
-                    ]
-                })
-        
-        # Content suggestions
-        if 'relevant_chunks' in results:
-            relevant = results['relevant_chunks']
-            
-            if len(relevant) > 0:
-                suggestions.append({
-                    'title': 'Content Enhancement',
-                    'description': f'Found {len(relevant)} relevant sections. Enhance content based on analysis.',
-                    'priority': 'medium',
-                    'category': 'content',
-                    'actions': [
-                        'Expand on key topics',
-                        'Add supporting examples',
-                        'Include visual aids'
-                    ]
-                })
-        
-        return suggestions
-    
-    def _generate_general_suggestions(self, results: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate general suggestions"""
-        suggestions = [
-            {
-                'title': 'Regular Monitoring',
-                'description': 'Implement regular monitoring and review processes.',
-                'priority': 'medium',
-                'category': 'monitoring',
-                'actions': [
-                    'Set up periodic reviews',
-                    'Define key success metrics',
-                    'Create alerting systems'
-                ]
-            },
-            {
-                'title': 'Continuous Improvement',
-                'description': 'Establish continuous improvement processes.',
-                'priority': 'medium',
-                'category': 'improvement',
-                'actions': [
-                    'Collect feedback regularly',
-                    'Identify improvement opportunities',
-                    'Implement iterative changes'
-                ]
-            }
-        ]
-        
-        return suggestions
-    
-    def _prioritize_suggestions(self, suggestions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Prioritize suggestions based on priority levels"""
-        # Add priority weights
-        for suggestion in suggestions:
-            priority = suggestion.get('priority', 'medium')
-            suggestion['priority_weight'] = self.priority_levels[priority]['weight']
-            suggestion['priority_label'] = self.priority_levels[priority]['label']
-        
-        # Sort by priority weight (descending)
-        return sorted(suggestions, key=lambda x: x['priority_weight'], reverse=True)
-    
-    def _create_action_plan(self, suggestions: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Create an action plan from suggestions"""
-        action_plan = {
-            'immediate_actions': [],
-            'short_term_goals': [],
-            'long_term_objectives': [],
-            'success_metrics': []
-        }
-        
-        for suggestion in suggestions:
-            if suggestion['priority'] == 'high':
-                action_plan['immediate_actions'].extend(suggestion.get('actions', []))
-            elif suggestion['priority'] == 'medium':
-                action_plan['short_term_goals'].extend(suggestion.get('actions', []))
-            else:
-                action_plan['long_term_objectives'].extend(suggestion.get('actions', []))
-        
-        # Add success metrics
-        action_plan['success_metrics'] = [
-            'Track implementation progress',
-            'Monitor key performance indicators',
-            'Measure impact of changes',
-            'Collect stakeholder feedback'
-        ]
-        
-        return action_plan
-    
-    def create_recommendation_report(self, suggestions: List[Dict[str, Any]], 
-                                   title: str = "Recommendations Report") -> Dict[str, Any]:
-        """Create a comprehensive recommendation report"""
-        logger.info(f"Creating recommendation report: {title}")
+    def _parse_llm_response(self, response_content: str) -> List[str]:
+        """Parse LLM response to extract questions"""
+        import json
+        import re
         
         try:
-            report = {
-                'title': title,
-                'summary': f"Generated {len(suggestions)} recommendations based on analysis",
-                'priority_breakdown': self._get_priority_breakdown(suggestions),
-                'category_breakdown': self._get_category_breakdown(suggestions),
-                'recommendations': suggestions,
-                'implementation_timeline': self._create_implementation_timeline(suggestions)
-            }
+            # Try to parse as JSON first
+            response_clean = response_content.strip()
+            if response_clean.startswith('[') and response_clean.endswith(']'):
+                questions = json.loads(response_clean)
+                if isinstance(questions, list):
+                    return [str(q).strip() for q in questions if q.strip()]
             
-            return report
+            # If JSON parsing fails, try to extract questions using regex
+            # Look for patterns like "Question?", "What is...?", "How does...?", etc.
+            question_patterns = [
+                r'["\']([^"\']+\?)["\']',  # Quoted questions
+                r'([A-Z][^.!?]*\?)',       # Questions starting with capital letter
+                r'([^.!?]*\?[^.!?]*)',     # Any text ending with ?
+            ]
+            
+            questions = []
+            for pattern in question_patterns:
+                matches = re.findall(pattern, response_content)
+                for match in matches:
+                    if isinstance(match, tuple):
+                        match = match[0]
+                    question = match.strip()
+                    if len(question) > 10 and question not in questions:
+                        questions.append(question)
+            
+            # If still no questions found, split by lines and look for question marks
+            if not questions:
+                lines = response_content.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if '?' in line and len(line) > 10:
+                        # Clean up the line
+                        question = re.sub(r'^\d+\.\s*', '', line)  # Remove numbering
+                        question = re.sub(r'^["\']|["\']$', '', question)  # Remove quotes
+                        if question and question not in questions:
+                            questions.append(question)
+            
+            return questions[:4]  # Return max 4 questions
             
         except Exception as e:
-            logger.error(f"Error creating recommendation report: {str(e)}")
-            return {'error': f'Report creation failed: {str(e)}'}
+            logger.error(f"Error parsing LLM response: {str(e)}")
+            return []
     
-    def _get_priority_breakdown(self, suggestions: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Get breakdown of suggestions by priority"""
-        breakdown = {'high': 0, 'medium': 0, 'low': 0}
+    def create_simple_suggestions(self, answer_content: str, context: Dict[str, Any] = None) -> List[str]:
+        """Create simple follow-up questions without complex processing"""
+        # Extract a few key terms
+        import re
         
-        for suggestion in suggestions:
-            priority = suggestion.get('priority', 'medium')
-            breakdown[priority] += 1
+        # Get original question for context
+        original_question = context.get("query", "") if context else ""
         
-        return breakdown
-    
-    def _get_category_breakdown(self, suggestions: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Get breakdown of suggestions by category"""
-        breakdown = {}
+        # Find capitalized terms and acronyms from both answer and original question
+        answer_terms = re.findall(r'\b[A-Z][a-zA-Z]{2,}\b|\b[A-Z]{2,}\b', answer_content)
+        question_terms = re.findall(r'\b[A-Z][a-zA-Z]{2,}\b|\b[A-Z]{2,}\b', original_question)
         
-        for suggestion in suggestions:
-            category = suggestion.get('category', 'general')
-            breakdown[category] = breakdown.get(category, 0) + 1
+        # Combine and prioritize terms that appear in both
+        all_terms = list(set(answer_terms + question_terms))
+        common_terms = [term for term in answer_terms if term in question_terms]
         
-        return breakdown
-    
-    def _create_implementation_timeline(self, suggestions: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-        """Create implementation timeline"""
-        timeline = {
-            'week_1': [],
-            'month_1': [],
-            'quarter_1': [],
-            'ongoing': []
-        }
+        # Use common terms first, then other terms
+        terms = common_terms + [term for term in all_terms if term not in common_terms]
+        terms = terms[:3]  # Get unique terms, limit to 3
         
-        for suggestion in suggestions:
-            title = suggestion.get('title', 'Suggestion')
-            
-            if suggestion.get('priority') == 'high':
-                timeline['week_1'].append(title)
-            elif suggestion.get('priority') == 'medium':
-                timeline['month_1'].append(title)
+        if not terms:
+            # Fallback suggestions that relate to the original question
+            if "mpi" in original_question.lower():
+                return [
+                    "How does MPI handle communication between processes?",
+                    "What are the main MPI functions for data exchange?",
+                    "Can you show me a simple MPI example?"
+                ]
             else:
-                timeline['quarter_1'].append(title)
+                return [
+                    "Can you explain this in more detail?",
+                    "What are the key points to remember?",
+                    "How does this relate to other topics?"
+                ]
         
-        timeline['ongoing'] = ['Monitor progress', 'Collect feedback', 'Adjust strategies']
+        suggestions = []
+        for term in terms:
+            suggestions.extend([
+                f"What is {term}?",
+                f"How does {term} work?",
+                f"Can you provide examples of {term}?"
+            ])
         
-        return timeline 
+        return suggestions[:5]  # Return max 5 suggestions 

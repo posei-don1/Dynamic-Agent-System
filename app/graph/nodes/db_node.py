@@ -137,7 +137,8 @@ class DbNode:
             "Return a JSON object with:\n"
             "- function: the operation to perform (mean, sum, min, max, count, all values, etc.)\n"
             "- column: the column to use\n"
-            "Example: {\"function\": \"mean\", \"column\": \"Salary\"}"
+            "if no funcion is called must tackle such cases and responsd properly like no column found"
+            "Example: {\"function\": , \"column\": \"Salary\"}"
         )
         try:
             response = openai.chat.completions.create(
@@ -201,7 +202,24 @@ class DbNode:
             elif op_requested:
                 print(f"[DbNode] Passing data to MathNode for function '{op_requested}'")
                 if hasattr(math_node, 'dispatch'):
-                    math_result = math_node.dispatch(op_requested, col_data.tolist())
+                    raw_result = math_node.dispatch(op_requested, col_data.tolist())
+                    # Format the raw result into a proper dictionary structure
+                    if isinstance(raw_result, (int, float)):
+                        math_result = {
+                            "type": op_requested,
+                            "result": raw_result,
+                            "description": f"{op_requested} of column '{used_col}'",
+                            "formatted_result": f"The {op_requested} of {used_col} is {raw_result:,.2f}" if isinstance(raw_result, float) else f"The {op_requested} of {used_col} is {raw_result:,}"
+                        }
+                    elif isinstance(raw_result, dict):
+                        math_result = raw_result
+                    else:
+                        math_result = {
+                            "type": op_requested,
+                            "result": raw_result,
+                            "description": f"{op_requested} of column '{used_col}'",
+                            "formatted_result": str(raw_result)
+                        }
                 else:
                     func_map = {
                         'mean': pd.Series.mean,
@@ -215,7 +233,13 @@ class DbNode:
                     func = func_map.get(op_requested)
                     if not func:
                         return {"success": False, "error": f"Unsupported function '{op_requested}'. Supported: {math_keywords}"}
-                    math_result = {"type": op_requested, "result": func(col_data), "description": f"{op_requested} of column '{used_col}'"}
+                    raw_result = func(col_data)
+                    math_result = {
+                        "type": op_requested, 
+                        "result": raw_result, 
+                        "description": f"{op_requested} of column '{used_col}'",
+                        "formatted_result": f"The {op_requested} of {used_col} is {raw_result:,.2f}" if isinstance(raw_result, float) else f"The {op_requested} of {used_col} is {raw_result:,}"
+                    }
                 print(f"[DbNode] MathNode result: {math_result}")
             else:
                 print(f"[DbNode] No math operation requested, returning column data only.")
