@@ -7,6 +7,8 @@ import logging
 import os
 from pathlib import Path
 import openai
+import PyPDF2
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -71,43 +73,93 @@ class DocNode:
         print(f"Found document: {file_path}")
         return file_path
     
+    def _extract_pdf_text_by_page(self, file_path: str) -> List[str]:
+        """Extract text from each page of a PDF as a list of strings."""
+        text_by_page = []
+        try:
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    text_by_page.append(page.extract_text() or "")
+        except Exception as e:
+            logger.error(f"PDF extraction failed: {str(e)}")
+        return text_by_page
+
+    def _chunk_pdf_by_page(self, file_path: str) -> List[Dict[str, Any]]:
+        """Chunk PDF by page, tracking page number for each chunk."""
+        text_by_page = self._extract_pdf_text_by_page(file_path)
+        all_chunks = []
+        for page_num, page_text in enumerate(text_by_page, start=1):
+            words = page_text.split()
+            for i in range(0, len(words), self.chunk_size - self.chunk_overlap):
+                chunk_words = words[i:i + self.chunk_size]
+                chunk = ' '.join(chunk_words)
+                all_chunks.append({
+                    'text': chunk,
+                    'page_number': page_num
+                })
+        return all_chunks
+
     def _process_with_rag(self, file_path: str, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Process document using RAG (Retrieval-Augmented Generation)"""
         try:
+            file_ext = Path(file_path).suffix.lower()
             # 1. Create embeddings for the user query
             from app.graph.services.embedding_service import EmbeddingService
             embedding_service = EmbeddingService()
             query_embedding = embedding_service.embed_texts([query])[0]
-            
             if not query_embedding:
                 return {"error": "Failed to create query embedding."}
-            
-            # 2. Search Pinecone for relevant chunks
+
+            # 2. Chunk document and track page numbers if PDF
+            if file_ext == '.pdf':
+                all_chunks = self._chunk_pdf_by_page(file_path)
+            else:
+                text = self._extract_text(file_path, file_ext)
+                all_chunks = [{ 'text': chunk, 'page_number': 1 } for chunk in self._chunk_text(text)]
+
+            # 3. Search Pinecone for relevant chunks (use chunk text only)
             from app.graph.services.pinecone_service import PineconeService
             pinecone_service = PineconeService()
-            
-            # Connect to Pinecone index
             connect_result = pinecone_service.connect_to_index()
             if not connect_result or connect_result.get("error"):
                 return {"error": f"Failed to connect to Pinecone: {connect_result.get('error', 'Unknown error')}"}
-            
+
+            # Prepare chunk texts for embedding
+            chunk_texts = [c['text'] for c in all_chunks]
+            chunk_embeddings = embedding_service.embed_texts(chunk_texts)
             # Search for relevant chunks
             search_result = pinecone_service.semantic_search(
                 query_embedding=query_embedding,
                 top_k=5  # Get top 5 most relevant chunks
             )
-            
             if not search_result.get("success"):
                 return {"error": f"Pinecone search failed: {search_result.get('error', 'Unknown error')}"}
-            
-            relevant_chunks = search_result.get("results", [])
+            # Map Pinecone results to our chunks (assume order matches)
+            relevant_chunks = []
+            pinecone_results = search_result.get("results", [])
+            for i, pinecone_chunk in enumerate(pinecone_results):
+                idx = pinecone_chunk.get('chunk_id', i)
+                if isinstance(idx, str):
+                    match = re.search(r'(\d+)$', idx)
+                    if match:
+                        idx = int(match.group(1))
+                    else:
+                        idx = i
+                # Defensive: fallback to index if chunk_id not present
+                if isinstance(idx, int) and idx < len(all_chunks):
+                    chunk = all_chunks[idx]
+                    relevant_chunks.append({
+                        'text': chunk['text'],
+                        'page_number': chunk['page_number'],
+                        'chunk_id': idx,
+                        'relevance_score': pinecone_chunk.get('relevance_score', 0.0)
+                    })
             if not relevant_chunks:
                 return {"error": "No relevant content found in the document for your query."}
-            
-            # 3. Use LLM to generate an answer based on retrieved chunks
-            answer = self._generate_rag_answer(query, relevant_chunks)
-            
-            # 4. Format the response
+            # 4. Use LLM to generate an answer based on retrieved chunks
+            answer = self._generate_rag_answer(query, relevant_chunks, context)
+            # 5. Format the response
             return {
                 "success": True,
                 "type": "document_analysis",
@@ -121,21 +173,29 @@ class DocNode:
                     "embedding_model": "text-embedding-ada-002"
                 }
             }
-            
         except Exception as e:
             logger.error(f"RAG processing failed: {str(e)}")
             return {"error": f"RAG processing failed: {str(e)}"}
     
-    def _generate_rag_answer(self, query: str, relevant_chunks: List[Dict[str, Any]]) -> str:
-        """Generate answer using LLM based on retrieved chunks"""
+    def _generate_rag_answer(self, query: str, relevant_chunks: List[Dict[str, Any]], context: Dict[str, Any] = None) -> str:
+        """Generate answer using LLM based on retrieved chunks and persona system prompt"""
         try:
+            # Ensure context is a dict
+            if context is None:
+                context = {}
             # Prepare context from retrieved chunks
             context_text = ""
             for i, chunk in enumerate(relevant_chunks):
                 chunk_text = chunk.get("text", "")
                 relevance_score = chunk.get("relevance_score", 0.0)
                 context_text += f"\n[Chunk {i+1}] (Relevance: {relevance_score:.3f})\n{chunk_text}\n"
-            
+
+            # Get persona system prompt
+            from app.graph.nodes.persona_selector import PersonaSelector
+            persona_selector = PersonaSelector()
+            persona_name = context.get('persona') or context.get('requested_persona') or 'general'
+            system_prompt = persona_selector.get_persona_prompt(persona_name)
+
             # Generate answer using LLM
             rag_prompt = f"""
             Based on the following document excerpts, answer the user's question: "{query}"
@@ -149,37 +209,38 @@ class DocNode:
             - If the document doesn't contain enough information to answer fully, say so
             - Be specific and cite the relevant parts of the document
             """
-            
+
             response = openai.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that answers questions based on document content. Always cite your sources from the provided chunks."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": rag_prompt}
                 ],
                 max_tokens=500,
                 temperature=0.3
             )
-            
+
             return response.choices[0].message.content or "No answer generated."
-            
         except Exception as e:
             logger.error(f"LLM generation failed: {str(e)}")
             return f"Failed to generate answer: {str(e)}"
     
     def _format_references(self, relevant_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Format references for the response"""
+        """Format references for the response, including page_number if present"""
         references = []
         for i, chunk in enumerate(relevant_chunks):
             chunk_text = chunk.get("text", "")
             chunk_id = chunk.get("chunk_id", f"chunk_{i}")
             relevance_score = chunk.get("relevance_score", 0.0)
-            
-            references.append({
+            page_number = chunk.get("page_number", None)
+            ref = {
                 "chunk_id": chunk_id,
                 "relevance_score": relevance_score,
                 "text_preview": chunk_text[:200] + "..." if len(chunk_text) > 200 else chunk_text
-            })
-        
+            }
+            if page_number is not None:
+                ref["page_number"] = page_number
+            references.append(ref)
         return references
     
     def _extract_text(self, file_path: str, file_ext: str) -> str:

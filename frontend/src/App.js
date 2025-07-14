@@ -127,6 +127,7 @@ function App() {
           isProcessing={isProcessing}
           onQuerySubmit={handleQuerySubmit}
           onMetadataUpdate={setChatMetadata}
+          selectedPersona={selectedPersona}
         />
       </div>
 

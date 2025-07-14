@@ -10,8 +10,9 @@ import {
   CopyOutlined,
   FileTextOutlined
 } from '@ant-design/icons';
+import ReactMarkdown from 'react-markdown';
 
-const CenterPanel = ({ onMetadataUpdate }) => {
+const CenterPanel = ({ onMetadataUpdate, selectedPersona }) => {
   const [inputValue, setInputValue] = useState('');
   const [chatHistory, setChatHistory] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -40,7 +41,7 @@ const CenterPanel = ({ onMetadataUpdate }) => {
       // Backend expects: { query: <str>, persona: <str>, context: <dict|null> }
       const payload = {
         query: userMessage.trim(),
-        persona: 'default', // You can make this dynamic if you add persona selection
+        persona: selectedPersona || 'general', // Use selected persona from props
         context: null // Extend this if you want to pass extra context
       };
       const response = await fetch('http://localhost:8000/query', {
@@ -275,7 +276,22 @@ const CenterPanel = ({ onMetadataUpdate }) => {
                               <div className="flex-1">
                                 {bot.message && (
                                   <div>
-                                    <p className="text-sm leading-relaxed">{bot.message}</p>
+                                    <ReactMarkdown
+                                      className="prose prose-invert max-w-none text-sm leading-relaxed"
+                                      components={{
+                                        h1: ({node, ...props}) => <h1 className="text-2xl font-bold mt-4 mb-2" {...props} />,
+                                        h2: ({node, ...props}) => <h2 className="text-xl font-semibold mt-3 mb-2" {...props} />,
+                                        h3: ({node, ...props}) => <h3 className="text-lg font-semibold mt-2 mb-1" {...props} />,
+                                        ul: ({node, ...props}) => <ul className="list-disc ml-6 my-2" {...props} />,
+                                        ol: ({node, ...props}) => <ol className="list-decimal ml-6 my-2" {...props} />,
+                                        li: ({node, ...props}) => <li className="mb-1" {...props} />,
+                                        strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
+                                        code: ({node, ...props}) => <code className="bg-dark-tertiary px-1 rounded" {...props} />,
+                                        p: ({node, ...props}) => <p className="mb-2" {...props} />,
+                                      }}
+                                    >
+                                      {bot.message}
+                                    </ReactMarkdown>
                                     {bot.rawData && bot.rawData.formatted_response && (
                                       <div className="mt-2 text-xs text-dark-textSecondary">
                                         {bot.rawData.formatted_response.sections?.map((section, idx) => {
