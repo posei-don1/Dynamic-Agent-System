@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { 
   UserOutlined, 
   DollarOutlined, 
-  LaptopOutlined, 
-  TeamOutlined,
+  RobotOutlined,
   UploadOutlined,
   FileTextOutlined,
   DatabaseOutlined,
@@ -25,8 +24,7 @@ const LeftPanel = ({ selectedPersona, onPersonaChange, uploadedFiles, onFileUplo
   const personas = [
     { id: 'financial_analyst', name: 'Financial Analyst', icon: DollarOutlined, color: 'text-green-400' },
     { id: 'legal_advisor', name: 'Legal Advisor', icon: UserOutlined, color: 'text-blue-400' },
-    { id: 'data_scientist', name: 'Data Scientist', icon: LaptopOutlined, color: 'text-purple-400' },
-    { id: 'business_consultant', name: 'Business Consultant', icon: TeamOutlined, color: 'text-orange-400' }
+    { id: 'general', name: 'General', icon: RobotOutlined, color: 'text-yellow-400' }
   ];
 
   const handleFileUpload = (event) => {

@@ -499,47 +499,53 @@ class AnswerFormatter:
         else:
             return str(value)
     
-    def _add_persona_context(self, persona: str, formatted_response: Dict[str, Any]) -> Dict[str, Any]:
-        """Add persona-specific context to response"""
-        persona_contexts = {
-            'general': {
-                'perspective': 'General Analysis Perspective',
-                'focus': 'This analysis provides a comprehensive view of the topic.',
-                'expertise': 'General assistant with broad knowledge and analytical capabilities',
-                'approach': 'I provide a balanced analysis considering multiple perspectives and general knowledge.',
-                'signature': 'From a general perspective, I provide comprehensive analysis of the available information.'
-            },
-            'financial_analyst': {
-                'perspective': 'Financial Analysis Perspective',
-                'focus': 'This analysis focuses on financial metrics, trends, and investment implications.',
-                'expertise': 'Expert in financial analysis, market trends, and investment strategies',
-                'approach': 'I analyze data from a financial perspective, considering market implications, risk factors, and investment opportunities.',
-                'signature': 'From a financial analyst perspective, I focus on the monetary and market implications of this data.'
-            },
-            'legal_advisor': {
-                'perspective': 'Legal Analysis Perspective',
-                'focus': 'This analysis examines legal implications, compliance, and contractual aspects.',
-                'expertise': 'Legal expert specializing in contracts, compliance, and regulations',
-                'approach': 'I examine information through a legal lens, identifying compliance issues, contractual implications, and regulatory considerations.',
-                'signature': 'From a legal advisor perspective, I focus on compliance, contractual obligations, and regulatory implications.'
-            },
-            'data_scientist': {
-                'perspective': 'Data Science Perspective',
-                'focus': 'This analysis applies statistical methods and data modeling techniques.',
-                'expertise': 'Expert in data analysis, machine learning, and statistical modeling',
-                'approach': 'I apply statistical rigor and data science methodologies to extract meaningful insights and patterns.',
-                'signature': 'From a data scientist perspective, I focus on statistical significance, data quality, and predictive insights.'
-            },
-            'business_consultant': {
-                'perspective': 'Business Strategy Perspective',
-                'focus': 'This analysis considers business impact, operational efficiency, and strategic implications.',
-                'expertise': 'Business strategy and operations expert',
-                'approach': 'I evaluate information from a strategic business perspective, considering operational impact, market positioning, and growth opportunities.',
-                'signature': 'From a business consultant perspective, I focus on strategic implications, operational efficiency, and business value.'
-            }
+    def _add_persona_context(self, persona: Optional[str], formatted_response: Dict[str, Any]) -> Dict[str, Any]:
+        """Add persona-specific context and signature for the answer"""
+        # Ensure persona is a string and default to 'general' if None or invalid
+        if not isinstance(persona, str) or not persona:
+            persona = 'general'
+        # Strong, explicit system prompts for each persona
+        persona_prompts = {
+            'legal_advisor': (
+                    """
+                You are a highly experienced legal advisor with deep expertise in contracts, compliance, and regulations. 
+                Always answer as a legal expert: provide clear, precise, and actionable legal advice, referencing relevant laws, statutes, or regulations when appropriate. 
+                Use formal, professional, and unambiguous language. 
+                Avoid giving financial, business, or general advice—focus strictly on legal matters. 
+                If a question is outside your legal domain, politely state your limitations and recommend consulting a relevant expert. 
+                Stay in character as a legal advisor at all times, and never speculate beyond your legal expertise.
+                """
+            ),
+            'financial_analyst': (
+                """
+                You are a professional financial analyst with expertise in financial modeling, market trends, and investment strategies. 
+                Always answer as a finance expert: provide detailed, data-driven, and insightful financial analysis, using appropriate financial terminology and referencing current market trends or historical data when relevant. 
+                Offer actionable insights and risk assessments where possible. 
+                Avoid providing legal, business, or general advice—focus strictly on financial analysis. 
+                If a question is outside your financial domain, politely state your limitations and recommend consulting a relevant expert. 
+                Stay in character as a financial analyst at all times, and never speculate beyond your financial expertise.
+                """
+            ),
+            'general': (
+                """
+                You are a helpful, knowledgeable general assistant with broad expertise across many domains. 
+                Answer clearly, concisely, and in a friendly, accessible tone. 
+                If a question requires legal or financial expertise, recommend consulting a specialist and do not attempt to provide professional advice in those areas. 
+                Avoid speculation and always strive for accuracy and clarity. 
+                Stay in character as a general-purpose assistant at all times.
+                """
+            )
         }
-        
-        return persona_contexts.get(persona, persona_contexts['general'])
+        # Default to general if not found
+        system_prompt = persona_prompts.get(persona, persona_prompts['general'])
+        # Existing context (signature, expertise, approach)
+        context = {
+            'signature': f"This answer is provided by a {persona.replace('_', ' ').title()}.",
+            'expertise': f"Expertise: {persona.replace('_', ' ').title()} domain.",
+            'approach': f"Approach: Answers are tailored to the {persona.replace('_', ' ').title()} perspective.",
+            'system_prompt': system_prompt
+        }
+        return context
     
     def create_summary_report(self, responses: List[Dict[str, Any]], title: str = "Analysis Report") -> Dict[str, Any]:
         """Create a comprehensive summary report from multiple responses"""

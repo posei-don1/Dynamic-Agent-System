@@ -160,3 +160,6 @@ vector_cache/
 temp_images/
 screenshots/
 ocr_cache/ 
+
+# Frontend
+frontend/node_modules/

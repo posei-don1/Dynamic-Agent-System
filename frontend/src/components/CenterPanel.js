@@ -237,80 +237,94 @@ const CenterPanel = ({ onMetadataUpdate }) => {
             </div>
           )}
 
-          {chatHistory.map((chat, index) => (
-            <div
-              key={index}
-              className={`flex ${chat.type === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}
-            >
-              <div className={`max-w-2xl flex ${chat.type === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                {/* Avatar */}
-                <div className={`flex-shrink-0 ${chat.type === 'user' ? 'ml-3' : 'mr-3'}`}>
-                  <div className="neo-button-small p-2 rounded-full">
-                    {chat.type === 'user' ? (
-                      <UserOutlined className="text-dark-info" />
-                    ) : (
-                      <RobotOutlined className="text-dark-success" />
+          {/* Group user-bot pairs */}
+          {(() => {
+            const pairs = [];
+            for (let i = 0; i < chatHistory.length; i++) {
+              const chat = chatHistory[i];
+              if (chat.type === 'user') {
+                // Find the next bot message (if any)
+                const bot = chatHistory[i + 1] && chatHistory[i + 1].type === 'bot' ? chatHistory[i + 1] : null;
+                pairs.push(
+                  <div key={i} className="space-y-2">
+                    {/* User message */}
+                    <div className="flex justify-end animate-fade-in">
+                      <div className="max-w-2xl flex flex-row-reverse">
+                        <div className="flex-shrink-0 ml-3">
+                          <div className="neo-button-small p-2 rounded-full">
+                            <UserOutlined className="text-dark-info" />
+                          </div>
+                        </div>
+                        <div className="neo-card-flat bg-dark-tertiary border border-dark-info">
+                          <p className="text-sm leading-relaxed font-semibold">{chat.message}</p>
+                          <div className="text-xs text-dark-textSecondary mt-2">{chat.timestamp.toLocaleTimeString()}</div>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Bot message (if any) */}
+                    {bot && (
+                      <div className="flex justify-start animate-fade-in">
+                        <div className="max-w-2xl flex flex-row">
+                          <div className="flex-shrink-0 mr-3">
+                            <div className="neo-button-small p-2 rounded-full">
+                              <RobotOutlined className="text-dark-success" />
+                            </div>
+                          </div>
+                          <div className={`neo-card-flat ${bot.success ? 'bg-dark-secondary' : 'bg-red-900/20'}`}> 
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                {bot.message && (
+                                  <div>
+                                    <p className="text-sm leading-relaxed">{bot.message}</p>
+                                    {bot.rawData && bot.rawData.formatted_response && (
+                                      <div className="mt-2 text-xs text-dark-textSecondary">
+                                        {bot.rawData.formatted_response.sections?.map((section, idx) => {
+                                          if (section.title === 'Processed Data' && section.data && section.data.used_file) {
+                                            return (
+                                              <div key={idx} className="text-[10px] opacity-70">
+                                                Source: {section.data.used_file}
+                                              </div>
+                                            );
+                                          }
+                                          return null;
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {bot.suggestions && bot.suggestions.length > 0 && (
+                                  <div className="mt-3 space-y-2">
+                                    <div className="flex items-center text-[11px] text-dark-textSecondary font-semibold">
+                                      <BulbOutlined className="mr-1 text-[12px]" />
+                                      Suggested Questions:
+                                    </div>
+                                    <div className="space-y-1">
+                                      {bot.suggestions.slice(0, 3).map((suggestion, i) => (
+                                        <button
+                                          key={i}
+                                          onClick={() => handleSuggestedQuery(suggestion.title)}
+                                          className="block w-full text-left neo-panel-inset p-2 rounded text-[11px] text-dark-textSecondary hover:text-dark-text hover:bg-dark-tertiary/50 transition-colors"
+                                        >
+                                          {suggestion.title}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-xs text-dark-textSecondary mt-2">{bot.timestamp.toLocaleTimeString()}</div>
+                          </div>
+                        </div>
+                      </div>
                     )}
                   </div>
-                </div>
-
-                {/* Message */}
-                <div className={`neo-card-flat ${chat.type === 'user' ? 'bg-dark-tertiary' : chat.success ? 'bg-dark-secondary' : 'bg-red-900/20'}`}>
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      {/* Main Message */}
-                      {chat.type === 'bot' && chat.message && (
-                        <div>
-                          <p className="text-sm leading-relaxed">{chat.message}</p>
-                          {/* Additional context for structured data (optional) */}
-                          {chat.rawData && chat.rawData.formatted_response && (
-                            <div className="mt-2 text-xs text-dark-textSecondary">
-                              {chat.rawData.formatted_response.sections?.map((section, idx) => {
-                                // Only show file info for context
-                                if (section.title === 'Processed Data' && section.data && section.data.used_file) {
-                                  return (
-                                    <div key={idx} className="text-[10px] opacity-70">
-                                      Source: {section.data.used_file}
-                                    </div>
-                                  );
-                                }
-                                return null;
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      
-                      {/* Suggested Questions */}
-                      {chat.type === 'bot' && chat.suggestions && chat.suggestions.length > 0 && (
-                        <div className="mt-3 space-y-2">
-                          <div className="flex items-center text-[11px] text-dark-textSecondary font-semibold">
-                            <BulbOutlined className="mr-1 text-[12px]" />
-                            Suggested Questions:
-                          </div>
-                          <div className="space-y-1">
-                            {chat.suggestions.slice(0, 3).map((suggestion, i) => (
-                              <button
-                                key={i}
-                                onClick={() => handleSuggestedQuery(suggestion.title)}
-                                className="block w-full text-left neo-panel-inset p-2 rounded text-[11px] text-dark-textSecondary hover:text-dark-text hover:bg-dark-tertiary/50 transition-colors"
-                              >
-                                {suggestion.title}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="text-xs text-dark-textSecondary mt-2">
-                    {chat.timestamp.toLocaleTimeString()}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
+                );
+                if (bot) i++; // Skip the bot message in the next iteration
+              }
+            }
+            return pairs;
+          })()}
 
           {/* Processing Indicator */}
           {isProcessing && (
