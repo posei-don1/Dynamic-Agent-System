@@ -343,10 +343,10 @@ def upsert_chunks_to_pinecone(chunks, embeddings, safe_filename):
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        print(f"=== FILE UPLOAD DEBUG ===")
-        print(f"Filename: {file.filename}")
-        print(f"Content Type: {file.content_type}")
-        print(f"File size: {file.size if hasattr(file, 'size') else 'Unknown'}")
+        # print(f"=== FILE UPLOAD DEBUG ===")
+        # print(f"Filename: {file.filename}")
+        # print(f"Content Type: {file.content_type}")
+        # print(f"File size: {file.size if hasattr(file, 'size') else 'Unknown'}")
         safe_filename = file.filename if file.filename else f"uploaded_{int(time.time())}.dat"
         ext = os.path.splitext(safe_filename)[1].lower()
         content_type = (file.content_type or "").lower()
@@ -375,22 +375,23 @@ async def upload_file(file: UploadFile = File(...)):
             file_path = os.path.join(structured_dir, safe_filename)
             with open(file_path, 'wb') as f:
                 f.write(file_bytes)
-            print(f"Structured file saved to: {file_path}")
+            # print(f"Structured file saved to: {file_path}")
             text = extract_text_from_file(file_path, file_type)
-            print(f"Extracted text length: {len(text)}")
-            print("Skipping embedding for structured file.")
+            # print(f"Extracted text length: {len(text)}")
+            # print("Skipping embedding for structured file.")
             # --- Update CSV/column cache using DbNode ---
             try:
                 if graph_system is not None:
                     graph_system.db_node.update_column_names_cache(safe_filename)
-                    print("[UPLOAD] CSV columns cached successfully.")
+                    # print("[UPLOAD] CSV columns cached successfully.")
                 else:
                     from app.graph.nodes.db_node import DbNode
                     db_node = DbNode()
                     db_node.update_column_names_cache(safe_filename)
-                    print("[UPLOAD] CSV columns cached successfully (local instance).")
+                    # print("[UPLOAD] CSV columns cached successfully (local instance).")
             except Exception as meta_exc:
-                print(f"[UPLOAD] Error updating CSV column cache: {meta_exc}")
+                # print(f"[UPLOAD] Error updating CSV column cache: {meta_exc}")
+                pass
             # --- End CSV/column cache update ---
             return {
                 "status": "success",
@@ -414,7 +415,7 @@ async def upload_file(file: UploadFile = File(...)):
             file_path = os.path.join(unstructured_dir, safe_filename)
             with open(file_path, 'wb') as f:
                 f.write(file_bytes)
-            print(f"Unstructured file saved to: {file_path}")
+            # print(f"Unstructured file saved to: {file_path}")
             # Clear Pinecone index (delete all vectors)
             pinecone_service = PineconeService()
             pinecone_service.connect_to_index()
@@ -433,12 +434,12 @@ async def upload_file(file: UploadFile = File(...)):
                         print(f"Error deleting structured file {f}: {e}")
             # Continue with embedding, chunking, etc.
             text = extract_text_from_file(file_path, file_type)
-            print(f"Extracted text length: {len(text)}")
+            # print(f"Extracted text length: {len(text)}")
             chunks = chunk_text(text)
-            print(f"Number of chunks created: {len(chunks)}")
+            # print(f"Number of chunks created: {len(chunks)}")
             embeddings = generate_embeddings(chunks)
-            print(f"Generated {len(embeddings)} embeddings")
-            print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
+            # print(f"Generated {len(embeddings)} embeddings")
+            # print(f"Embedding dimension: {len(embeddings[0]) if embeddings else 0}")
             upsert_chunks_to_pinecone(chunks, embeddings, safe_filename)
             print("=== SUCCESS ===")
             return {

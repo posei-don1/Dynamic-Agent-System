@@ -27,16 +27,6 @@ class PersonaSelector:
                 "keywords": ["contract", "legal", "compliance", "regulation", "law", "agreement"],
                 "capabilities": ["document review", "legal analysis", "compliance checking"]
             },
-            "data_scientist": {
-                "description": "Expert in data analysis, machine learning, and statistical modeling",
-                "keywords": ["data", "analysis", "statistics", "ml", "model", "prediction"],
-                "capabilities": ["data processing", "statistical analysis", "predictive modeling"]
-            },
-            "business_consultant": {
-                "description": "Business strategy and operations expert",
-                "keywords": ["strategy", "business", "operations", "consulting", "growth", "optimization"],
-                "capabilities": ["strategic planning", "process optimization", "business analysis"]
-            }
         }
     
     def select_persona(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -107,4 +97,8 @@ class PersonaSelector:
         
         Always respond in character as this persona, providing expert insights 
         and analysis relevant to your domain of expertise.
+        also try to use the context to help you answer the question.
+        if the context is not relevant to the question, you can tell the user that you don't have the information to answer the question.
+        if the context is relevant to the question, you can use it to help you answer the question.
+        try to ext
         """ 

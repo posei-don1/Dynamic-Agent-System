@@ -104,38 +104,37 @@ class DocNode:
         """Process document using RAG (Retrieval-Augmented Generation)"""
         try:
             file_ext = Path(file_path).suffix.lower()
-            # 1. Create embeddings for the user query
+            # 1. Create embedding for the user query ONLY
             from app.graph.services.embedding_service import EmbeddingService
             embedding_service = EmbeddingService()
             query_embedding = embedding_service.embed_texts([query])[0]
             if not query_embedding:
                 return {"error": "Failed to create query embedding."}
 
-            # 2. Chunk document and track page numbers if PDF
+            # 2. Fetch all chunk metadata (text, page_number, etc.)
+            #    (Assume chunk metadata is stored in Pinecone or can be reconstructed from file)
             if file_ext == '.pdf':
                 all_chunks = self._chunk_pdf_by_page(file_path)
             else:
                 text = self._extract_text(file_path, file_ext)
                 all_chunks = [{ 'text': chunk, 'page_number': 1 } for chunk in self._chunk_text(text)]
 
-            # 3. Search Pinecone for relevant chunks (use chunk text only)
+            # 3. Search Pinecone for relevant chunks (using only query embedding)
             from app.graph.services.pinecone_service import PineconeService
             pinecone_service = PineconeService()
             connect_result = pinecone_service.connect_to_index()
             if not connect_result or connect_result.get("error"):
                 return {"error": f"Failed to connect to Pinecone: {connect_result.get('error', 'Unknown error')}"}
 
-            # Prepare chunk texts for embedding
-            chunk_texts = [c['text'] for c in all_chunks]
-            chunk_embeddings = embedding_service.embed_texts(chunk_texts)
-            # Search for relevant chunks
+            # DO NOT re-embed all chunk texts! Just search Pinecone with the query embedding
             search_result = pinecone_service.semantic_search(
                 query_embedding=query_embedding,
                 top_k=5  # Get top 5 most relevant chunks
             )
             if not search_result.get("success"):
                 return {"error": f"Pinecone search failed: {search_result.get('error', 'Unknown error')}"}
-            # Map Pinecone results to our chunks (assume order matches)
+
+            # Map Pinecone results to our chunks using chunk_id
             relevant_chunks = []
             pinecone_results = search_result.get("results", [])
             for i, pinecone_chunk in enumerate(pinecone_results):
